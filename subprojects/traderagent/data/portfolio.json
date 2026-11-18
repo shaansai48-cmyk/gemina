@@ -1,0 +1,62 @@
+{
+  "account_id": "ISK 5872428",
+  "active_focus_ticker": "NVDA",
+  "daily_stats": {
+    "date": "2026-11-18",
+    "trades_executed_today": 0,
+    "realized_pnl_today_sek": 0.0,
+    "last_stopout_epoch": 0
+  },
+  "last_seen_ts_by_ticker": {
+    "NVDA": "2026-11-18T22:45:00Z"
+  },
+  "cash_reserves": {
+    "available_tactical_mini_sek": 14548.0,
+    "pending_fund_sale_sek": 1568.0,
+    "pending_fund_settlement_date": "2026-11-24"
+  },
+  "watchlist": {
+    "NVDA": {
+      "exchange": "NASDAQ",
+      "currency": "USD",
+      "regular_shares_held": 16,
+      "blended_avg_price": 156.73,
+      "hard_stop_price": 148.5,
+      "take_profit_price": 164.5,
+      "mini_instrument": "MINI L NVIDIA AVA 308",
+      "mini_financing_level": 118.415,
+      "mini_barrier": 130.21,
+      "mini_parity": 10.0,
+      "mini_units_held": 0,
+      "mini_avg_sek": 0.0
+    },
+    "ERIC B": {
+      "exchange": "OMXSTO",
+      "currency": "SEK",
+      "regular_shares_held": 0,
+      "blended_avg_price": 0.0,
+      "hard_stop_price": 101.5,
+      "take_profit_price": 109.5,
+      "mini_instrument": "MINI L ERICSSON AVA",
+      "mini_financing_level": 82.0,
+      "mini_barrier": 86.5,
+      "mini_parity": 1.0,
+      "mini_units_held": 0,
+      "mini_avg_sek": 0.0
+    },
+    "MSFT": {
+      "exchange": "NASDAQ",
+      "currency": "USD",
+      "regular_shares_held": 0,
+      "blended_avg_price": 0.0,
+      "hard_stop_price": 495.0,
+      "take_profit_price": 524.0,
+      "mini_instrument": "MINI L MICROSOFT AVA",
+      "mini_financing_level": 395.0,
+      "mini_barrier": 415.0,
+      "mini_parity": 100.0,
+      "mini_units_held": 0,
+      "mini_avg_sek": 0.0
+    }
+  }
+}

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gemina"
+version = "1.0.0"
+description = "Gemina — Top-Level Personal Multi-Agent Framework & Umbrella Repository"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.31.0",
+    "ollama>=0.4.0",
+    "pydantic>=2.7.0",
+    "google-genai>=1.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gemina*"]

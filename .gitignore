@@ -1,0 +1,20 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv
+.venv/
+venv/
+env/
+
+# Secrets & local runtime logs
+.env
+*.tmp_*.json
+subprojects/traderagent/data/trade_audit.jsonl
+subprojects/traderagent/data/pipeline_trace.jsonl

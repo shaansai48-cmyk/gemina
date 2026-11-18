@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gemina-traderagent"
+version = "1.0.0"
+description = "TraderAgent — Multi-Ticker Avanza Quantitative Trading Sub-Agent for the Gemina Personal Agent Framework"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "gemina>=1.0.0",
+    "requests>=2.31.0",
+    "ollama>=0.4.0",
+    "pydantic>=2.7.0",
+    "google-genai>=1.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+traderagent-daemon = "traderagent.application.daemon:main"
+traderagent-trace = "traderagent.cli.trace_viewer:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["traderagent*"]
