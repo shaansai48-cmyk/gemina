@@ -1,5 +1,5 @@
 """
-4-Level Focused Agentic Quant Committee:
+4-Level Focused Agentic Quant Committee (Driven by Declarative `agents/subagent.md` & `skills/*.md`):
   L1: Catalyst & Macro Search Grounding Agent
   L2: Alpha Strategist & Setup Proposer Agent (with multi-bar trajectory memory)
   L3a: Deterministic Python Fee-Adjusted R:R Math Auditor
@@ -8,22 +8,29 @@
 """
 import json
 import time
+from pathlib import Path
 from typing import Any, Optional
 from gemina.core.llm_router import CognitiveLLMRouter
 from gemina.core.tracing import PipelineTracer
-from traderagent.agents.prompts import L2_STRATEGIST_PROMPT, L3_CRITIC_PROMPT
+from traderagent.agents.prompts import (
+    build_l2_strategist_prompt,
+    build_l3_critic_prompt,
+    get_subagent_definition,
+)
 from traderagent.domain.guardrails import enforce_hard_quant_guardrails
 from traderagent.domain.models import AdversarialCritique, TradeDecision, TradeDecisionDraft
 from traderagent.domain.quant_math import compute_verified_fee_adjusted_rr
 
 
 class QuantAgentCommittee:
-    """Orchestrates the 4-level focused agentic loop for 15m bar evaluation."""
+    """Orchestrates the 4-level focused agentic loop using declarative Markdown personas and skills."""
 
     def __init__(self, llm_router: CognitiveLLMRouter):
         self.llm = llm_router
 
-    def run_l1_catalyst_agent(self, ticker: str, tracer: Optional[PipelineTracer] = None) -> str:
+    def run_l1_catalyst_agent(
+        self, ticker: str, system_instruction: str, tracer: Optional[PipelineTracer] = None
+    ) -> str:
         t0 = time.perf_counter()
         prompt = (
             f"[LEVEL-1 CATALYST & MACRO AGENT]\n"
@@ -36,6 +43,7 @@ class QuantAgentCommittee:
         try:
             text, model_used, _ = self.llm.generate_grounded_text(
                 prompt=prompt,
+                system_instruction=system_instruction,
                 use_google_search=True,
                 temperature=0.1,
                 allow_ollama_fallback=False,
@@ -71,6 +79,7 @@ class QuantAgentCommittee:
         tracer: Optional[PipelineTracer] = None,
     ) -> TradeDecisionDraft:
         t0 = time.perf_counter()
+        l2_system_prompt, sub_def = build_l2_strategist_prompt()
         user_payload = (
             f"[LEVEL-2 ALPHA STRATEGIST]\n"
             f"Propose an initial TradeDecisionDraft for the 15m bar close on {ticker}.\n\n"
@@ -79,15 +88,15 @@ class QuantAgentCommittee:
         )
         draft, model_used, status = self.llm.generate_structured(
             prompt=user_payload,
-            system_instruction=L2_STRATEGIST_PROMPT,
+            system_instruction=l2_system_prompt,
             schema=TradeDecisionDraft,
-            temperature=0.1,
+            temperature=sub_def.temperature,
         )
         if tracer:
             tracer.add_stage(
                 stage="L2_ALPHA_PROPOSER",
                 status=status,
-                input_data={"model": model_used, "context_bytes": len(context_blob)},
+                input_data={"model": model_used, "persona": sub_def.name, "context_bytes": len(context_blob)},
                 transformation=f"Level-2 Strategist proposed {draft.action} ({draft.market_regime}, claimed R:R 1:{draft.net_risk_reward_ratio})",
                 output_data={
                     "proposed_action": draft.action,
@@ -108,6 +117,7 @@ class QuantAgentCommittee:
         tracer: Optional[PipelineTracer] = None,
     ) -> AdversarialCritique:
         t0 = time.perf_counter()
+        l3_system_prompt, sub_def = build_l3_critic_prompt()
         critic_input = (
             f"[LEVEL-3 ADVERSARIAL RED-TEAM CRITIC & RISK AUDITOR]\n"
             f"Audit and stress-test the Level-2 Alpha Strategist's draft decision.\n\n"
@@ -118,9 +128,9 @@ class QuantAgentCommittee:
         )
         critique, model_used, raw_status = self.llm.generate_structured(
             prompt=critic_input,
-            system_instruction=L3_CRITIC_PROMPT,
+            system_instruction=l3_system_prompt,
             schema=AdversarialCritique,
-            temperature=0.1,
+            temperature=sub_def.temperature,
         )
         status = critique.verdict if raw_status == "OK" else f"{critique.verdict}_OLLAMA"
         critique.refined_decision.net_risk_reward_ratio = math_audit["python_verified_net_rr"]
@@ -131,6 +141,7 @@ class QuantAgentCommittee:
                 status=status,
                 input_data={
                     "model": model_used,
+                    "persona": sub_def.name,
                     "l2_action": draft.action,
                     "l2_rr": math_audit["llm_claimed_rr"],
                     "python_rr": math_audit["python_verified_net_rr"],
@@ -159,6 +170,27 @@ class QuantAgentCommittee:
         recent_ticker_bars: list[dict],
         tracer: Optional[PipelineTracer] = None,
     ) -> TradeDecision:
+        # Load declarative subagent persona (`agents/subagent.md`) & skills (`skills/*.md`)
+        t_load = time.perf_counter()
+        sub_def = get_subagent_definition()
+        base_system_prompt = sub_def.compile_system_prompt()
+        if tracer:
+            tracer.add_stage(
+                stage="DECLARATIVE_AGENT_SKILL_LOAD",
+                status="OK",
+                input_data={"agent_md": Path(sub_def.source_path).name, "skills": sub_def.skill_names},
+                transformation=(
+                    f"Loaded declarative subagent '{sub_def.name}' ({sub_def.role}) "
+                    f"with {len(sub_def.loaded_skills)} skill(s)"
+                ),
+                output_data={
+                    "compiled_prompt_chars": len(base_system_prompt),
+                    "model": sub_def.model,
+                    "temperature": sub_def.temperature,
+                },
+                duration_ms=(time.perf_counter() - t_load) * 1000.0,
+            )
+
         context_blob = json.dumps({
             "active_ticker": telemetry["ticker"],
             "telemetry_15m": telemetry,
@@ -171,7 +203,9 @@ class QuantAgentCommittee:
         }, indent=2)
 
         # Level 1: Catalyst & Macro Search Grounding Agent
-        live_news_context = self.run_l1_catalyst_agent(telemetry["ticker"], tracer=tracer)
+        live_news_context = self.run_l1_catalyst_agent(
+            telemetry["ticker"], system_instruction=base_system_prompt, tracer=tracer
+        )
 
         # Level 2: Alpha Strategist Proposal Agent
         draft = self.run_l2_alpha_strategist(context_blob, live_news_context, telemetry["ticker"], tracer=tracer)

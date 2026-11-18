@@ -1,23 +1,25 @@
 """
 Portfolio- & System-Aware General Conversational AI Assistant.
+Dynamically loads `agents/main_agent.md` (or `agents/subagent.md`) and `skills/*.md` via `src/loader.py`.
 """
 import json
 import time
 from collections import deque
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 from gemina.core.diagnostics import SystemDiagnostics
 from gemina.core.llm_router import CognitiveLLMRouter
 from gemina.core.tracing import PipelineTracer
-from traderagent.agents.prompts import CHAT_ASSISTANT_PROMPT
+from traderagent.agents.prompts import get_main_agent_definition, get_subagent_definition
 from traderagent.infrastructure.persistence import StateRepository
 
 CET = ZoneInfo("Europe/Stockholm")
 
 
 class ConversationalQAAgent:
-    """Answers general & trading questions using Gemini 4 Argon + Google Search + live host diagnostics."""
+    """Answers general & trading questions using declarative Markdown agent personas + skills."""
 
     def __init__(self, llm_router: CognitiveLLMRouter, repo: StateRepository):
         self.llm = llm_router
@@ -27,7 +29,36 @@ class ConversationalQAAgent:
     def clear_history(self) -> None:
         self.chat_history.clear()
 
-    def answer(self, user_query: str, tracer: Optional[PipelineTracer] = None) -> str:
+    def answer(
+        self,
+        user_query: str,
+        tracer: Optional[PipelineTracer] = None,
+        use_subagent_persona: bool = False,
+    ) -> str:
+        t_load = time.perf_counter()
+        agent_def = get_subagent_definition() if use_subagent_persona else get_main_agent_definition()
+        compiled_system_prompt = agent_def.compile_system_prompt()
+
+        if tracer:
+            tracer.add_stage(
+                stage="DECLARATIVE_AGENT_SKILL_LOAD",
+                status="OK",
+                input_data={
+                    "agent_md": Path(agent_def.source_path).name,
+                    "skills": agent_def.skill_names,
+                },
+                transformation=(
+                    f"Loaded declarative persona '{agent_def.name}' ({agent_def.role}) "
+                    f"and injected {len(agent_def.loaded_skills)} skill(s) into system prompt"
+                ),
+                output_data={
+                    "compiled_prompt_chars": len(compiled_system_prompt),
+                    "model": agent_def.model,
+                    "temperature": agent_def.temperature,
+                },
+                duration_ms=(time.perf_counter() - t_load) * 1000.0,
+            )
+
         t0 = time.perf_counter()
         portfolio = self.repo.load_portfolio()
         risk = self.repo.load_risk()
@@ -61,9 +92,9 @@ class ConversationalQAAgent:
         t_llm = time.perf_counter()
         answer, model_used, llm_status = self.llm.generate_grounded_text(
             prompt=prompt,
-            system_instruction=CHAT_ASSISTANT_PROMPT,
+            system_instruction=compiled_system_prompt,
             use_google_search=True,
-            temperature=0.2,
+            temperature=agent_def.temperature,
             allow_ollama_fallback=True,
         )
         if llm_status.startswith("FALLBACK"):
@@ -73,8 +104,8 @@ class ConversationalQAAgent:
             tracer.add_stage(
                 stage="LLM_REASONING_TRANSFORM",
                 status=llm_status,
-                input_data={"prompt_chars": len(prompt), "model": model_used},
-                transformation=f"Generated answer via {model_used} with Google Search grounding",
+                input_data={"prompt_chars": len(prompt), "model": model_used, "persona": agent_def.name},
+                transformation=f"Generated answer via {model_used} using persona '{agent_def.name}' + Google Search grounding",
                 output_data={"answer_chars": len(answer), "preview": answer[:120]},
                 duration_ms=(time.perf_counter() - t_llm) * 1000.0,
             )

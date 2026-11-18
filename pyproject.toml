@@ -16,6 +16,9 @@ dependencies = [
     "python-dotenv>=1.0.0",
 ]
 
+[project.scripts]
+gemina-bot = "src.bot:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["gemina*"]
+include = ["gemina*", "src*"]

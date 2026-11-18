@@ -141,7 +141,7 @@ class TelegramCommandRouter:
                 f"relates to our portfolio watchlist levels and Avanza Mini Future parameters."
             )
             self.telegram.send_typing()
-            return self.qa_agent.answer(q, tracer=tracer), None
+            return self.qa_agent.answer(q, tracer=tracer, use_subagent_persona=True), None
 
         if cmd == "/clear":
             self.qa_agent.clear_history()
