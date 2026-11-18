@@ -1,0 +1,63 @@
+{
+  "active_ticker": "NVDA",
+  "telemetry_15m": {
+    "ticker": "NVDA",
+    "time": "2026-11-18T22:45:00Z",
+    "close": 150.85,
+    "low": 150.1,
+    "high": 151.4,
+    "ema4": 151.2,
+    "vwap": 152,
+    "or_high": 154.5,
+    "or_low": 150,
+    "pd_low": 149.8,
+    "atr14": 2.4,
+    "rsi14": 38.5
+  },
+  "computed_metrics": {
+    "currency": "USD",
+    "fx_multiplier": 10.16,
+    "mini_theoretical_sek": 32.95,
+    "mini_effective_leverage": 4.65,
+    "regular_shares_net_unrealized_pnl_sek": -1081.0,
+    "distance_to_ema4": -0.35,
+    "distance_to_vwap": -1.15
+  },
+  "asset_state": {
+    "exchange": "NASDAQ",
+    "currency": "USD",
+    "regular_shares_held": 16,
+    "blended_avg_price": 156.73,
+    "hard_stop_price": 148.5,
+    "take_profit_price": 164.5,
+    "mini_instrument": "MINI L NVIDIA AVA 308",
+    "mini_financing_level": 118.415,
+    "mini_barrier": 130.21,
+    "mini_parity": 10.0,
+    "mini_units_held": 0,
+    "mini_avg_sek": 0.0
+  },
+  "daily_stats": {
+    "date": "2026-11-18",
+    "trades_executed_today": 0,
+    "realized_pnl_today_sek": 0.0,
+    "last_stopout_epoch": 0
+  },
+  "available_cash_sek": 14548.0,
+  "immutable_risk_limits": {
+    "max_daily_trades": 2,
+    "max_concurrent_leveraged_minis": 1,
+    "cooldown_minutes_after_stopout": 45,
+    "daily_loss_lockout_sek": -900.0,
+    "min_net_rr_ratio": 1.8,
+    "require_close_above_vwap_for_mini": true,
+    "pd_low_sweep_exception_atr_mult": 0.35,
+    "stop_buffer_below_pd_low_atr_mult": 0.2,
+    "ema4_failure_exit_atr_mult": 0.15,
+    "avanza_us_fx_roundtrip_pct": 0.005,
+    "avanza_mini_spread_pct": 0.0038,
+    "nordic_etp_cutoff_cet": "20:30",
+    "us_open_blackout_start_cet": "15:30",
+    "us_open_blackout_end_cet": "15:45"
+  }
+}

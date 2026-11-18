@@ -144,9 +144,9 @@ class TestGeminaTraderAgentArchitecture(unittest.TestCase):
 
         # 4. Sub-VWAP Veto
         r_open = copy.deepcopy(self.risk)
-        r_open["nordic_etp_cutoff_cet"] = "23:59"
+        r_open["nordic_etp_cutoff_cet"] = "24:00"
         r_open["us_open_blackout_start_cet"] = "00:00"
-        r_open["us_open_blackout_end_cet"] = "00:01"
+        r_open["us_open_blackout_end_cet"] = "00:00"
         d4 = enforce_hard_quant_guardrails(self._make_buy_decision(), self.sample_telemetry, self.portfolio, self.nvda_asset, r_open, 10.16)
         self.assertEqual(d4.action, "HOLD")
         self.assertIn("VETO: SUB-VWAP", d4.rationale)

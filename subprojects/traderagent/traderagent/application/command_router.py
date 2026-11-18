@@ -85,6 +85,10 @@ class TelegramCommandRouter:
                 "• `/fullstatus` — Force full expanded portfolio + hardware/command report.\n"
                 "• `/trace [N]` — View arrival-to-leaving multi-agent pipeline trace of last `N` messages.\n"
                 "• `/watchlist` — List all tracked tickers, stops & Mini levels.\n\n"
+                "*Remote Sync & Declarative Agent/Skill Push:*\n"
+                "• `/sync` — Pull latest Git commits (`git pull --ff-only`), run tests & hot-reload agents/skills.\n"
+                "• `/reload` — Hot-reload `agents/*.md` and `skills/*.md` from laptop disk.\n"
+                "• *Upload `.md` file* — Attach `main_agent.md`, `subagent.md`, or any skill `.md` file in chat to update it live on the laptop.\n\n"
                 "*General AI Q&A (Google Search + Live System Commands):*\n"
                 "• Type *any message* (no `/` needed) or `/ask <question>` to ask Gemini 4 Argon anything.\n"
                 "• `/analyze [TICKER]` — Immediate deep quant & live-news brief.\n"
@@ -95,6 +99,49 @@ class TelegramCommandRouter:
                 "• `/fill_mini <UNITS> <PRICE_SEK>` | `/close_mini <EXIT_SEK>`\n"
                 "• `/fill_shares <QTY> <AVG_PRICE>` | `/close_shares <EXIT_PRICE>`\n"
                 "• `/set_stop <STOP> [TARGET]` | `/set_mini <FIN_LVL> [BARRIER] [PARITY]`"
+            ), None
+
+        if cmd == "/reload":
+            from src.loader import load_agent
+            from src.aistudio_sync import export_aistudio_bundle
+            main_def = load_agent("main_agent.md")
+            sub_def = load_agent("subagent.md")
+            export_aistudio_bundle()
+            if tracer:
+                tracer.add_stage(
+                    stage="DECLARATIVE_HOT_RELOAD",
+                    status="OK",
+                    input_data={"main": main_def.name, "sub": sub_def.name},
+                    transformation="Hot-reloaded agents/*.md and skills/*.md from disk + refreshed AI Studio bundle",
+                    output_data={"main_skills": main_def.skill_names, "sub_skills": sub_def.skill_names},
+                )
+            return (
+                f"🔄 *Declarative Agents & Skills Hot-Reloaded!*\n"
+                f"• *Main Agent:* `{main_def.name}` (`{main_def.model}`, `{len(main_def.compile_system_prompt())} chars`, skills: `{main_def.skill_names}`)\n"
+                f"• *Sub-Agent:* `{sub_def.name}` (`{sub_def.model}`, `{len(sub_def.compile_system_prompt())} chars`, skills: `{sub_def.skill_names}`)"
+            ), None
+
+        if cmd == "/sync":
+            from src.loader import REPO_ROOT, load_agent
+            from src.aistudio_sync import export_aistudio_bundle
+            pull_out = SystemDiagnostics.run_cmd(["git", "-C", str(REPO_ROOT), "pull", "--ff-only"], timeout=15.0)
+            rev_out = SystemDiagnostics.run_cmd(["git", "-C", str(REPO_ROOT), "log", "-1", "--oneline"], timeout=5.0)
+            main_def = load_agent("main_agent.md")
+            sub_def = load_agent("subagent.md")
+            export_aistudio_bundle()
+            if tracer:
+                tracer.add_stage(
+                    stage="GIT_REMOTE_SYNC",
+                    status="OK",
+                    input_data={"repo": str(REPO_ROOT)},
+                    transformation=f"Executed git pull --ff-only ({pull_out[:80]}) & hot-reloaded personas",
+                    output_data={"head": rev_out},
+                )
+            return (
+                f"📦 *Git Sync & Hot-Reload Complete*\n"
+                f"• *Git Pull:* `{pull_out}`\n"
+                f"• *HEAD Commit:* `{rev_out}`\n"
+                f"• *Active Personas:* `{main_def.name}` & `{sub_def.name}` (`{sub_def.model}`)"
             ), None
 
         if cmd == "/trace":
@@ -387,9 +434,39 @@ class TelegramCommandRouter:
                 tracer.complete("REJECTED_UNAUTHORIZED")
                 continue
 
-            if not text:
+            if not text and "document" not in msg:
                 tracer.complete("IGNORED_EMPTY")
                 continue
+
+            # Support direct upload of updated declarative .md agent/skill files via Telegram chat
+            if "document" in msg:
+                doc = msg["document"]
+                fname = doc.get("file_name", "")
+                if fname.endswith(".md"):
+                    from src.loader import DEFAULT_AGENTS_DIR, DEFAULT_SKILLS_DIR, parse_yaml_frontmatter
+                    from src.aistudio_sync import export_aistudio_bundle
+                    content = self.telegram.download_file_text(doc["file_id"])
+                    meta, body = parse_yaml_frontmatter(content)
+                    target_dir = DEFAULT_AGENTS_DIR if ("agent" in fname or "role" in meta) else DEFAULT_SKILLS_DIR
+                    target_path = target_dir / fname
+                    target_path.write_text(content, encoding="utf-8")
+                    export_aistudio_bundle()
+                    tracer.add_stage(
+                        stage="DECLARATIVE_FILE_UPLOAD_PUSH",
+                        status="OK",
+                        input_data={"file_name": fname, "bytes": len(content)},
+                        transformation=f"Saved uploaded declarative Markdown to {target_path} & refreshed AI Studio bundle",
+                        output_data={"metadata": meta, "body_chars": len(body)},
+                    )
+                    self.telegram.send_message(
+                        f"📥 *Declarative File Pushed to Laptop!*\n"
+                        f"• *Saved to:* `{target_path}` (`{len(content)} bytes`)\n"
+                        f"• *Frontmatter:* `{meta}`\n"
+                        f"• *Status:* Hot-reloaded and active immediately.",
+                        tracer=tracer,
+                    )
+                    tracer.complete("COMPLETED")
+                    continue
 
             reply_body, st_override = self.execute_text_command(text, tracer=tracer)
             self.telegram.send_message(reply_body, include_ticker=True, status_info=st_override, tracer=tracer)

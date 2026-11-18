@@ -127,3 +127,11 @@ class TelegramGateway:
         except Exception as e:
             print(f"[Telegram Poll Error] {e}")
             return []
+
+    def download_file_text(self, file_id: str) -> str:
+        """Downloads a small text/markdown file uploaded to Telegram chat."""
+        info_url = f"https://api.telegram.org/bot{self.config.telegram_bot_token}/getFile"
+        info_resp = requests.get(info_url, params={"file_id": file_id}, timeout=5).json()
+        file_path = info_resp["result"]["file_path"]
+        dl_url = f"https://api.telegram.org/file/bot{self.config.telegram_bot_token}/{file_path}"
+        return requests.get(dl_url, timeout=10).text

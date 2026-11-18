@@ -1,0 +1,110 @@
+{
+  "description": "Level-2 Alpha Strategist raw proposal before Adversarial Critic & Math Audit.",
+  "properties": {
+    "ticker": {
+      "title": "Ticker",
+      "type": "string"
+    },
+    "market_regime": {
+      "enum": [
+        "Reversal_Base_Building",
+        "Momentum_Breakout",
+        "Downtrend_Continuation",
+        "Volatile_Chop"
+      ],
+      "title": "Market Regime",
+      "type": "string"
+    },
+    "action": {
+      "enum": [
+        "HOLD",
+        "BUY_SHARES",
+        "SELL_SHARES",
+        "BUY_MINI_LONG",
+        "SELL_MINI_LONG"
+      ],
+      "title": "Action",
+      "type": "string"
+    },
+    "instrument": {
+      "title": "Instrument",
+      "type": "string"
+    },
+    "quantity": {
+      "title": "Quantity",
+      "type": "integer"
+    },
+    "limit_price": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Limit Price"
+    },
+    "avanza_stop_trigger_sek": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Avanza Stop-Loss Triggerkurs in SEK.",
+      "title": "Avanza Stop Trigger Sek"
+    },
+    "avanza_stop_sell_sek": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Avanza Stop-Loss S\u00e4ljkurs (0.20 SEK below trigger).",
+      "title": "Avanza Stop Sell Sek"
+    },
+    "underlying_stop_price": {
+      "title": "Underlying Stop Price",
+      "type": "number"
+    },
+    "take_profit_target": {
+      "title": "Take Profit Target",
+      "type": "number"
+    },
+    "net_risk_reward_ratio": {
+      "title": "Net Risk Reward Ratio",
+      "type": "number"
+    },
+    "overnight_gap_warning": {
+      "title": "Overnight Gap Warning",
+      "type": "boolean"
+    },
+    "rationale": {
+      "title": "Rationale",
+      "type": "string"
+    }
+  },
+  "required": [
+    "ticker",
+    "market_regime",
+    "action",
+    "instrument",
+    "quantity",
+    "limit_price",
+    "avanza_stop_trigger_sek",
+    "avanza_stop_sell_sek",
+    "underlying_stop_price",
+    "take_profit_target",
+    "net_risk_reward_ratio",
+    "overnight_gap_warning",
+    "rationale"
+  ],
+  "title": "TradeDecisionDraft",
+  "type": "object"
+}
