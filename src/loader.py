@@ -157,12 +157,18 @@ class DeclarativeLoader:
         candidate = Path(name_or_filename)
         if candidate.is_file():
             return candidate
-        if not name_or_filename.endswith(".md"):
-            name_or_filename = f"{name_or_filename}.md"
-        path = base_dir / name_or_filename
-        if not path.is_file():
-            raise FileNotFoundError(f"Declarative markdown file not found: {path}")
-        return path
+        stem = name_or_filename[:-3] if name_or_filename.endswith(".md") else name_or_filename
+        hyphen_stem = stem.replace("_", "-")
+        for rel in (
+            Path(stem) / "SKILL.md",
+            Path(hyphen_stem) / "SKILL.md",
+            Path(f"{stem}.md"),
+            Path(f"{hyphen_stem}.md"),
+        ):
+            path = base_dir / rel
+            if path.is_file():
+                return path
+        raise FileNotFoundError(f"Declarative markdown file not found for '{name_or_filename}' in {base_dir}")
 
     def load_skill(self, skill_name: str) -> SkillDefinition:
         path = self._resolve_file(self.skills_dir, skill_name)

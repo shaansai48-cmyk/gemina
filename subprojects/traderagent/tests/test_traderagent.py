@@ -74,7 +74,7 @@ class TestGeminaTraderAgentArchitecture(unittest.TestCase):
 
         main_agent = load_agent("main_agent.md")
         sub_agent = load_agent("subagent.md")
-        gemini_skill = load_skill("gemini_interaction.md")
+        gemini_skill = load_skill("gemini-interaction")
 
         self.assertEqual(main_agent.name, "gemina_main_agent")
         self.assertEqual(main_agent.model, "gemini-4-argon")
@@ -84,13 +84,13 @@ class TestGeminaTraderAgentArchitecture(unittest.TestCase):
         self.assertGreaterEqual(len(main_agent.loaded_skills), 3)
 
         self.assertEqual(sub_agent.name, "traderagent_subagent")
-        self.assertEqual(gemini_skill.name, "gemini_interaction")
+        self.assertEqual(gemini_skill.name, "gemini-interaction")
 
         compiled = sub_agent.compile_system_prompt()
         self.assertIn("## Goal", compiled)
         self.assertIn("## Backstory", compiled)
         self.assertIn("## Instructions", compiled)
-        self.assertIn("[SKILL: gemini_interaction]", compiled)
+        self.assertIn("[SKILL: gemini-interaction]", compiled)
 
         bot = DeclarativeTelegramBot()
         self.assertEqual(bot.main_agent_def.name, "gemina_main_agent")

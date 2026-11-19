@@ -5,9 +5,9 @@ model: gemini-4-argon
 fallback_model: qwen2.5-coder:14b
 temperature: 0.1
 skills:
-  - gemini_interaction
-  - avanza_quant_committee
-  - system_diagnostics
+  - gemini-interaction
+  - avanza-quant-committee
+  - system-diagnostics
 ---
 
 # Goal
