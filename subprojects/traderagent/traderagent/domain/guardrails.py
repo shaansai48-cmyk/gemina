@@ -98,9 +98,11 @@ def enforce_hard_quant_guardrails(
         decision.rationale = f"[VETO: ETP CUTOFF] Past {risk['nordic_etp_cutoff_cet']} CET; no new leveraged Mini entries."
         return _finish_guardrails()
 
-    # 3. Hard VWAP Gate on Leveraged Mini Longs
+    # 3. Hard VWAP Gate on Leveraged Mini Longs (with Bounded PD-Low Liquidity Sweep Reclaim Exception)
     if decision.action == "BUY_MINI_LONG" and risk["require_close_above_vwap_for_mini"] and close < vwap:
-        near_pd_low_sweep = (low <= (pd_low + risk["pd_low_sweep_exception_atr_mult"] * atr14)) and (close > ema4)
+        sweep_floor = pd_low - (1.0 * atr14)
+        sweep_ceiling = pd_low + (risk["pd_low_sweep_exception_atr_mult"] * atr14)
+        near_pd_low_sweep = (sweep_floor <= low <= sweep_ceiling) and (close > ema4)
         if not near_pd_low_sweep:
             mutations.append(f"VETO SUB-VWAP ({close} < {vwap}, BUY_MINI_LONG -> HOLD)")
             decision.action, decision.quantity = "HOLD", 0
@@ -114,9 +116,10 @@ def enforce_hard_quant_guardrails(
         decision.rationale = f"[VETO: LOW R:R] Net R:R (1:{decision.net_risk_reward_ratio}) < required 1:{risk['min_net_rr_ratio']}."
         return _finish_guardrails()
 
-    # 5. Structural Stop-Loss Floor Below pd_low (Prevents Liquidity Sweep Stop-Outs)
+    # 5. Structural Stop-Loss Floor Below pd_low (or intraday VWAP/low when breaking out >2.5 ATR above pd_low)
     if (decision.action == "BUY_MINI_LONG" or asset["mini_units_held"] > 0) and fin_lvl > 0:
-        structural_stop = round(pd_low - (risk["stop_buffer_below_pd_low_atr_mult"] * atr14), 2)
+        anchor_support = pd_low if (0 <= (close - pd_low) <= 2.5 * atr14) else min(vwap, low)
+        structural_stop = round(min(anchor_support, low) - (risk["stop_buffer_below_pd_low_atr_mult"] * atr14), 2)
         if decision.underlying_stop_price > structural_stop:
             old_stop = decision.underlying_stop_price
             decision.underlying_stop_price = structural_stop
@@ -125,7 +128,7 @@ def enforce_hard_quant_guardrails(
             decision.avanza_stop_sell_sek = round(trig_sek - 0.20, 2)
             mutations.append(f"STOP FLOOR ADJUSTED ({old_stop} -> {structural_stop}, Trigger {trig_sek} SEK)")
             decision.rationale += (
-                f" | [STOP FLOOR] Moved stop below pd_low ({pd_low}) to {structural_stop} "
+                f" | [STOP FLOOR] Moved stop below support ({anchor_support}) to {structural_stop} "
                 f"(Trigger {trig_sek} / Sell {decision.avanza_stop_sell_sek} SEK)."
             )
 

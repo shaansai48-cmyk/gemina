@@ -47,8 +47,13 @@ Every 15m bar evaluation follows four specialized cognitive levels:
   3. 45-minute cooldown after a stop-out (`[VETO: COOLDOWN]`)
   4. Opening Bell blackout `15:30–15:45 CET` (`[VETO: OPENING BELL GATE]`)
   5. Nordic ETP cutoff at `20:30 CET` (`[VETO: ETP CUTOFF]`)
-  6. Close above 15m VWAP required for Mini Longs unless sweeping `pd_low` within `0.35 * ATR14` and reclaiming `EMA4` (`[VETO: SUB-VWAP]`)
-  7. Minimum fee-adjusted Net R:R `>= 1.8` (`[VETO: LOW R:R]`), structural stop floor at `pd_low - 0.20 * ATR14` (`[STOP FLOOR]`), and immediate Mini exit if 15m close breaks below `EMA4 - 0.15 * ATR14` (`[EMA4 FAILURE EXIT]`).
+  6. Close above 15m VWAP required for Mini Longs unless sweeping within `[pd_low - 1.0 * ATR14, pd_low + 0.35 * ATR14]` and reclaiming `EMA4` (`[VETO: SUB-VWAP]`)
+  7. Minimum fee-adjusted Net R:R `>= 1.8` (`[VETO: LOW R:R]`), structural stop floor at `pd_low - 0.20 * ATR14` (or below `min(vwap, low) - 0.20 * ATR14` when breaking out `> 2.5 * ATR14` above `pd_low`) (`[STOP FLOOR]`), and immediate Mini exit if 15m close breaks below `EMA4 - 0.15 * ATR14` (`[EMA4 FAILURE EXIT]`).
+
+## 2. High-Beta Stock Regime Filter (Validated on 22-Day TSLA 15m Walk-Forward Backtest)
+For high-beta momentum stocks (`TSLA`, `NVDA`):
+- **Opening-Range & Daily Higher-Low Alignment:** Prioritize `BUY_MINI_LONG` entries when the session's Opening Range shows a **Daily Higher-Low (`or_low > pd_low`)**, price is above both `15m VWAP` and `EMA4` (`RSI14 >= 52`), and price is not overextended (`(close - vwap) <= 0.85 * max(atr14, 0.45 * (or_high - or_low))`).
+- **Volatility-Aware Stop Placement:** Because `atr14` at `15:45 CET` still includes 12 quiet late-session bars from the prior day, measure early-session effective volatility as `eff_vol = max(atr14, 0.45 * (or_high - or_low))` so stops are not placed inside normal opening noise.
 
 ### [SKILL: system_diagnostics] (Host hardware telemetry execution and traffic-light Status Ticker rules (compact GREEN vs auto-expanded RED).)
 # System Diagnostics & Traffic-Light Status Ticker Skill
