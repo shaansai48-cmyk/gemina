@@ -29,7 +29,9 @@ class StatusEvaluator:
         if risk is None:
             risk = self.repo.load_risk()
 
-        focus = portfolio["active_focus_ticker"]
+        focus_raw = portfolio["active_focus_ticker"]
+        focus_list = [x.strip() for x in focus_raw.split(",") if x.strip()]
+        focus = focus_list[0] if focus_list else "NVDA"
         asset = portfolio["watchlist"].get(focus, {})
         stats = portfolio["daily_stats"]
 

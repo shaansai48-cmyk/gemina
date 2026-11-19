@@ -208,23 +208,37 @@ class TelegramCommandRouter:
             return "\n".join(lines), None
 
         if cmd == "/focus" and len(parts) >= 2:
+            alias_map = {
+                "NVIDIA": "NVDA",
+                "TESLA": "TSLA",
+                "MICROSOFT": "MSFT",
+                "APPLE": "AAPL",
+                "GOOGLE": "GOOGL",
+                "ALPHABET": "GOOGL",
+                "AMAZON": "AMZN",
+                "ERICSSON": "ERIC B",
+                "ERIC": "ERIC B",
+            }
             old_focus = portfolio["active_focus_ticker"]
-            new_ticker = " ".join(parts[1:]).upper().replace("_", " ")
-            if new_ticker not in portfolio["watchlist"]:
-                portfolio["watchlist"][new_ticker] = {
-                    "exchange": "NASDAQ",
-                    "currency": "USD",
-                    "regular_shares_held": 0,
-                    "blended_avg_price": 0.0,
-                    "hard_stop_price": 0.0,
-                    "take_profit_price": 0.0,
-                    "mini_instrument": f"MINI L {new_ticker} AVA",
-                    "mini_financing_level": 0.0,
-                    "mini_barrier": 0.0,
-                    "mini_parity": 10.0,
-                    "mini_units_held": 0,
-                    "mini_avg_sek": 0.0,
-                }
+            raw_arg = " ".join(parts[1:]).upper().replace("_", " ")
+            tickers = [alias_map.get(t.strip(), t.strip()) for t in raw_arg.split(",") if t.strip()]
+            for t_sym in tickers:
+                if t_sym not in portfolio["watchlist"]:
+                    portfolio["watchlist"][t_sym] = {
+                        "exchange": "NASDAQ",
+                        "currency": "USD",
+                        "regular_shares_held": 0,
+                        "blended_avg_price": 0.0,
+                        "hard_stop_price": 0.0,
+                        "take_profit_price": 0.0,
+                        "mini_instrument": f"MINI L {t_sym} AVA",
+                        "mini_financing_level": 0.0,
+                        "mini_barrier": 0.0,
+                        "mini_parity": 10.0,
+                        "mini_units_held": 0,
+                        "mini_avg_sek": 0.0,
+                    }
+            new_ticker = ",".join(tickers)
             portfolio["active_focus_ticker"] = new_ticker
             self.repo.save_portfolio(portfolio)
             if tracer:
@@ -235,7 +249,7 @@ class TelegramCommandRouter:
                     transformation=f"Switched active_focus_ticker {old_focus} -> {new_ticker}",
                     output_data={"active_focus_ticker": new_ticker},
                 )
-            return f"🎯 *Focus Ticker Switched:* Now tracking `{new_ticker}`.", None
+            return f"🎯 *Focus Ticker(s) Switched:* Now tracking `{new_ticker}`.", None
 
         if cmd == "/add_ticker" and len(parts) >= 5:
             new_ticker = parts[1].upper().replace("_", " ")

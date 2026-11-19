@@ -80,11 +80,11 @@ class TraderAgentDaemon:
                 output_data={"telemetry_keys": list(payload.keys())},
             )
 
-            focus_ticker = portfolio["active_focus_ticker"].upper()
+            focus_list = [x.strip().upper() for x in portfolio["active_focus_ticker"].split(",") if x.strip()]
             asset = portfolio["watchlist"].get(incoming_ticker)
 
             if asset and (
-                incoming_ticker == focus_ticker
+                incoming_ticker in focus_list
                 or asset["regular_shares_held"] > 0
                 or asset["mini_units_held"] > 0
             ):
