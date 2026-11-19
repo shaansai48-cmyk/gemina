@@ -1,0 +1,275 @@
+[
+  {
+    "ticker": "MSFT",
+    "trace_id": "chart-MSFT-030308-258edb",
+    "telemetry_15m": {
+      "ticker": "MSFT",
+      "time": "2026-11-18T21:00:00Z",
+      "close": 508.29,
+      "low": 508.29,
+      "high": 508.29,
+      "session_low": 501.08,
+      "session_high": 510.44,
+      "prev_close": 506.3,
+      "day_change_pct": 0.39,
+      "ema4": 507.95,
+      "vwap": 506.01,
+      "or_high": 508.5,
+      "or_low": 502.07,
+      "pd_low": 496.51,
+      "pd_high": 515.64,
+      "atr14": 2.05,
+      "rsi14": 55.57,
+      "recent_4_bars": [
+        {
+          "time": "2026-11-18T20:00:00Z",
+          "close": 507.86,
+          "high": 508.39,
+          "low": 507.47
+        },
+        {
+          "time": "2026-11-18T20:15:00Z",
+          "close": 506.67,
+          "high": 508.19,
+          "low": 505.58
+        },
+        {
+          "time": "2026-11-18T20:30:00Z",
+          "close": 507.12,
+          "high": 508.0,
+          "low": 506.22
+        },
+        {
+          "time": "2026-11-18T20:45:00Z",
+          "close": 508.33,
+          "high": 508.84,
+          "low": 506.77
+        }
+      ]
+    },
+    "asset_config": {
+      "exchange": "NASDAQ",
+      "currency": "USD",
+      "regular_shares_held": 0,
+      "blended_avg_price": 0.0,
+      "hard_stop_price": 496.1,
+      "take_profit_price": 514.85,
+      "mini_instrument": "MINI L MSFT AVA",
+      "mini_financing_level": 396.47,
+      "mini_barrier": 424.22,
+      "mini_parity": 10.0,
+      "mini_units_held": 0,
+      "mini_avg_sek": 0.0
+    },
+    "computed_metrics": {
+      "currency": "USD",
+      "fx_multiplier": 10.16,
+      "mini_theoretical_sek": 113.61,
+      "mini_effective_leverage": 4.55,
+      "regular_shares_net_unrealized_pnl_sek": 0.0,
+      "distance_to_ema4": 0.34,
+      "distance_to_vwap": 2.28
+    },
+    "final_decision": {
+      "ticker": "MSFT",
+      "market_regime": "Volatile_Chop",
+      "action": "HOLD",
+      "instrument": "NONE",
+      "quantity": 0,
+      "limit_price": null,
+      "avanza_stop_trigger_sek": null,
+      "avanza_stop_sell_sek": null,
+      "underlying_stop_price": 496.1,
+      "take_profit_target": 514.85,
+      "net_risk_reward_ratio": 0.3,
+      "overnight_gap_warning": true,
+      "rationale": "MSFT closed the 15m bar at $508.29, above VWAP ($506.01) and EMA4 ($507.95), but capped directly underneath opening range high resistance ($508.50) at the 21:00 UTC market close. With the structural stop floor fixed at $496.10 (pd_low $496.51 - 0.20 * ATR14 = $12.19 risk per share) and the upside target at $514.85 ($6.56 gross reward before Avanza spread/FX drag), Python's deterministic fee-adjusted net Risk/Reward ratio is 1:0.30\u2014far below the immutable 1:1.8 minimum threshold. Furthermore, catalyst sentiment is NEUTRAL amid enterprise software CapEx headwinds, and the US session is closing (overnight gap risk). Maintaining a disciplined HOLD with zero open positions.",
+      "confidence_score": 95,
+      "critic_verdict": "REVISED_BY_CRITIC",
+      "critic_notes": "Level-2 correctly issued a HOLD decision due to overhead opening range high resistance ($508.50), poor risk/reward, and session close timing (21:00 UTC). However, Level-2's claimed fee-adjusted net R:R of 0.42 overstated the Python deterministic verified net R:R of 0.30 (discrepancy of 0.12). Overwriting net_risk_reward_ratio to the exact Python ground truth of 0.30."
+    },
+    "total_duration_ms": 40271.38
+  },
+  {
+    "ticker": "AAPL",
+    "trace_id": "chart-AAPL-030348-c9a756",
+    "telemetry_15m": {
+      "ticker": "AAPL",
+      "time": "2026-11-18T21:00:00Z",
+      "close": 352.45,
+      "low": 352.45,
+      "high": 352.45,
+      "session_low": 351.47,
+      "session_high": 356.42,
+      "prev_close": 351.9,
+      "day_change_pct": 0.16,
+      "ema4": 352.39,
+      "vwap": 353.48,
+      "or_high": 355.87,
+      "or_low": 351.87,
+      "pd_low": 349.67,
+      "pd_high": 355.36,
+      "atr14": 0.88,
+      "rsi14": 48.04,
+      "recent_4_bars": [
+        {
+          "time": "2026-11-18T20:00:00Z",
+          "close": 352.58,
+          "high": 352.67,
+          "low": 352.14
+        },
+        {
+          "time": "2026-11-18T20:15:00Z",
+          "close": 351.9,
+          "high": 352.61,
+          "low": 351.83
+        },
+        {
+          "time": "2026-11-18T20:30:00Z",
+          "close": 352.43,
+          "high": 352.49,
+          "low": 351.76
+        },
+        {
+          "time": "2026-11-18T20:45:00Z",
+          "close": 352.29,
+          "high": 353.21,
+          "low": 352.14
+        }
+      ]
+    },
+    "asset_config": {
+      "exchange": "NASDAQ",
+      "currency": "USD",
+      "regular_shares_held": 0,
+      "blended_avg_price": 0.0,
+      "hard_stop_price": 349.49,
+      "take_profit_price": 357.74,
+      "mini_instrument": "MINI L AAPL AVA",
+      "mini_financing_level": 274.91,
+      "mini_barrier": 294.15,
+      "mini_parity": 10.0,
+      "mini_units_held": 0,
+      "mini_avg_sek": 0.0
+    },
+    "computed_metrics": {
+      "currency": "USD",
+      "fx_multiplier": 10.16,
+      "mini_theoretical_sek": 78.78,
+      "mini_effective_leverage": 4.55,
+      "regular_shares_net_unrealized_pnl_sek": 0.0,
+      "distance_to_ema4": 0.06,
+      "distance_to_vwap": -1.03
+    },
+    "final_decision": {
+      "ticker": "AAPL",
+      "market_regime": "Volatile_Chop",
+      "action": "HOLD",
+      "instrument": "NONE",
+      "quantity": 0,
+      "limit_price": null,
+      "avanza_stop_trigger_sek": null,
+      "avanza_stop_sell_sek": null,
+      "underlying_stop_price": 349.49,
+      "take_profit_target": 357.74,
+      "net_risk_reward_ratio": 0.92,
+      "overnight_gap_warning": true,
+      "rationale": "AAPL closed the 15m bar at $352.45, trading $1.03 below session VWAP ($353.48) with flat RSI14 (48.04) and tight end-of-session chop ($351.76-$353.21 over the last 4 bars). Price is not near pd_low ($349.67) to qualify for a sub-VWAP sweep reversal (distance $2.78 vs max 0.35 * ATR14 = $0.31), violating the sub-VWAP entry rule for Mini Longs. Furthermore, the Python-verified fee-adjusted net R:R is only 0.92 (well below the 1.80 minimum threshold), overhead VWAP ($353.48) and OR_High ($355.87) cap immediate upside, and with NEUTRAL catalyst sentiment at the 21:00 UTC US close, HOLD is the optimal capital-preserving decision.",
+      "confidence_score": 96,
+      "critic_verdict": "REVISED_BY_CRITIC",
+      "critic_notes": "Level-2 claimed net_risk_reward_ratio = 1.32, whereas the deterministic Python math audit verified a fee-adjusted net R:R of 0.92 (discrepancy of 0.40 after Avanza 0.50% round-trip USD/SEK FX fee and ETP spread drag). Overwrote net_risk_reward_ratio with 0.92. Confirmed HOLD is strictly optimal given sub-VWAP trading ($352.45 vs VWAP $353.48), weak net R:R (0.92 < 1.80 minimum), flat RSI14 (48.04), and end-of-session chop."
+    },
+    "total_duration_ms": 37368.26
+  },
+  {
+    "ticker": "TSLA",
+    "trace_id": "chart-TSLA-030425-015693",
+    "telemetry_15m": {
+      "ticker": "TSLA",
+      "time": "2026-11-18T21:00:00Z",
+      "close": 383.72,
+      "low": 383.72,
+      "high": 383.72,
+      "session_low": 378.36,
+      "session_high": 389.27,
+      "prev_close": 380.14,
+      "day_change_pct": 0.94,
+      "ema4": 383.56,
+      "vwap": 383.16,
+      "or_high": 389.27,
+      "or_low": 379.35,
+      "pd_low": 374.15,
+      "pd_high": 382.84,
+      "atr14": 2.04,
+      "rsi14": 53.4,
+      "recent_4_bars": [
+        {
+          "time": "2026-11-18T20:00:00Z",
+          "close": 384.34,
+          "high": 384.76,
+          "low": 383.02
+        },
+        {
+          "time": "2026-11-18T20:15:00Z",
+          "close": 382.76,
+          "high": 384.63,
+          "low": 382.6
+        },
+        {
+          "time": "2026-11-18T20:30:00Z",
+          "close": 383.36,
+          "high": 384.08,
+          "low": 382.55
+        },
+        {
+          "time": "2026-11-18T20:45:00Z",
+          "close": 383.54,
+          "high": 385.77,
+          "low": 383.04
+        }
+      ]
+    },
+    "asset_config": {
+      "exchange": "NASDAQ",
+      "currency": "USD",
+      "regular_shares_held": 0,
+      "blended_avg_price": 0.0,
+      "hard_stop_price": 373.74,
+      "take_profit_price": 392.33,
+      "mini_instrument": "MINI L TSLA AVA",
+      "mini_financing_level": 299.3,
+      "mini_barrier": 320.25,
+      "mini_parity": 10.0,
+      "mini_units_held": 0,
+      "mini_avg_sek": 0.0
+    },
+    "computed_metrics": {
+      "currency": "USD",
+      "fx_multiplier": 10.16,
+      "mini_theoretical_sek": 85.77,
+      "mini_effective_leverage": 4.55,
+      "regular_shares_net_unrealized_pnl_sek": 0.0,
+      "distance_to_ema4": 0.16,
+      "distance_to_vwap": 0.56
+    },
+    "final_decision": {
+      "ticker": "TSLA",
+      "market_regime": "Volatile_Chop",
+      "action": "HOLD",
+      "instrument": "NONE",
+      "quantity": 0,
+      "limit_price": null,
+      "avanza_stop_trigger_sek": null,
+      "avanza_stop_sell_sek": null,
+      "underlying_stop_price": 379.35,
+      "take_profit_target": 389.27,
+      "net_risk_reward_ratio": 0.68,
+      "overnight_gap_warning": true,
+      "rationale": "While Level-1 catalyst sentiment is BULLISH (Robotaxi 24/7 expansion & 7.4 MW Powercore data center transformer catalyst) and TSLA closed at $383.72 above both 15m VWAP ($383.16) and EMA4 ($383.56), the bar timestamp is 21:00:00Z (16:00 EST / 22:00 CET), marking the US regular session closing bell. Furthermore, upside to the opening range / session high ($389.27, +$5.55) against a structural stop at the opening range low ($379.35, -$4.37) yields a Python-verified fee-adjusted net R:R of only 0.68 (after Avanza 0.50% round-trip USD/SEK FX fee drag), well below the mandatory 1.8 minimum net R:R threshold. With 0 shares and 0 Mini units held, HOLD is the optimal capital-preservation decision.",
+      "confidence_score": 95,
+      "critic_verdict": "REVISED_BY_CRITIC",
+      "critic_notes": "Level-2 correctly determined a HOLD decision at the 21:00:00Z closing bell, but reported the gross unadjusted R:R (1.27) in net_risk_reward_ratio instead of Python's deterministic fee-adjusted net R:R (0.68 after Avanza 0.50% USD/SEK round-trip FX fee drag). Overwriting net_risk_reward_ratio with python_verified_net_rr = 0.68."
+    },
+    "total_duration_ms": 42698.36
+  }
+]
