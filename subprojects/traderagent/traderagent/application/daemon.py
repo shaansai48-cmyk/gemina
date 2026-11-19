@@ -81,6 +81,7 @@ class TraderAgentDaemon:
             )
 
             focus_list = [x.strip().upper() for x in portfolio["active_focus_ticker"].split(",") if x.strip()]
+            focus_display = ",".join(focus_list)
             asset = portfolio["watchlist"].get(incoming_ticker)
 
             if asset and (
@@ -91,7 +92,7 @@ class TraderAgentDaemon:
                 tracer.add_stage(
                     stage="PORTFOLIO_FILTER",
                     status="ACCEPTED",
-                    input_data={"incoming": incoming_ticker, "active_focus": focus_ticker},
+                    input_data={"incoming": incoming_ticker, "active_focus": focus_display},
                     transformation="Matched active focus ticker or held position",
                     output_data={
                         "shares_held": asset["regular_shares_held"],
@@ -171,7 +172,7 @@ class TraderAgentDaemon:
                 tracer.add_stage(
                     stage="PORTFOLIO_FILTER",
                     status="IGNORED",
-                    input_data={"incoming": incoming_ticker, "active_focus": focus_ticker},
+                    input_data={"incoming": incoming_ticker, "active_focus": focus_display},
                     transformation=f"Ignored {incoming_ticker} (not active focus and 0 units held)",
                     output_data={"action": "DROP"},
                 )

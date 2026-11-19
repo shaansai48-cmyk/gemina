@@ -174,6 +174,7 @@ class QuantAgentCommittee:
         metrics: dict,
         recent_ticker_bars: list[dict],
         ticker_experience: Optional[dict[str, Any]] = None,
+        allow_live_search: bool = True,
         tracer: Optional[PipelineTracer] = None,
     ) -> TradeDecision:
         # Load declarative subagent persona (`agents/subagent.md`) & skills (`skills/*.md`)
@@ -209,13 +210,27 @@ class QuantAgentCommittee:
             "immutable_risk_limits": risk,
         }, indent=2)
 
-        # Level 1: Catalyst & Macro Search Grounding Agent
-        live_news_context = self.run_l1_catalyst_agent(
-            telemetry["ticker"],
-            system_instruction=base_system_prompt,
-            bar_time=str(telemetry.get("time", "")),
-            tracer=tracer,
-        )
+        # Level 1: Catalyst & Macro Search Grounding Agent (Disabled in historical PIT replay to prevent search leakage)
+        if allow_live_search:
+            live_news_context = self.run_l1_catalyst_agent(
+                telemetry["ticker"],
+                system_instruction=base_system_prompt,
+                bar_time=str(telemetry.get("time", "")),
+                tracer=tracer,
+            )
+        else:
+            live_news_context = (
+                "HISTORICAL_PIT_MODE: External live web search disabled during historical replay "
+                "to strictly eliminate future news/context leakage."
+            )
+            if tracer:
+                tracer.add_stage(
+                    stage="L1_CATALYST_AGENT",
+                    status="HISTORICAL_PIT_NO_SEARCH",
+                    input_data={"ticker": telemetry["ticker"], "bar_date": str(telemetry.get("time", ""))[:10]},
+                    transformation="Skipped live Google Search during historical replay to enforce Point-in-Time isolation",
+                    output_data={"mode": "pure_telemetry_pit"},
+                )
 
         # Level 2: Alpha Strategist Proposal Agent
         draft = self.run_l2_alpha_strategist(context_blob, live_news_context, telemetry["ticker"], tracer=tracer)

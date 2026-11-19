@@ -29,6 +29,57 @@ def format_trace_summary_for_telegram(trace: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+TICKER_ALIAS_MAP: dict[str, str] = {
+    "NVIDIA": "NVDA",
+    "TESLA": "TSLA",
+    "MICROSOFT": "MSFT",
+    "APPLE": "AAPL",
+    "GOOGLE": "GOOGL",
+    "ALPHABET": "GOOGL",
+    "AMAZON": "AMZN",
+    "META": "META",
+    "FACEBOOK": "META",
+    "AMD": "AMD",
+    "ERICSSON": "ERIC B",
+    "ERIC": "ERIC B",
+    "ERIC-B": "ERIC B",
+    "ERIC-B.ST": "ERIC B",
+}
+
+
+def resolve_focus_ticker(
+    portfolio: dict[str, Any],
+    explicit_ticker: Optional[str] = None,
+    prefer_held_mini: bool = False,
+    prefer_held_shares: bool = False,
+) -> str:
+    """Resolves a single watchlist ticker safely even when active_focus_ticker is comma-separated."""
+    watchlist = portfolio.get("watchlist", {})
+    if explicit_ticker:
+        norm = explicit_ticker.strip().upper().replace("_", " ")
+        norm = TICKER_ALIAS_MAP.get(norm, norm)
+        if norm in watchlist:
+            return norm
+
+    focus_raw = str(portfolio.get("active_focus_ticker", "NVDA"))
+    focus_list = [TICKER_ALIAS_MAP.get(t.strip().upper(), t.strip().upper()) for t in focus_raw.split(",") if t.strip()]
+    valid_focus = [t for t in focus_list if t in watchlist]
+
+    if prefer_held_mini:
+        for sym in valid_focus + list(watchlist.keys()):
+            if int(watchlist.get(sym, {}).get("mini_units_held", 0)) > 0:
+                return sym
+
+    if prefer_held_shares:
+        for sym in valid_focus + list(watchlist.keys()):
+            if int(watchlist.get(sym, {}).get("regular_shares_held", 0)) > 0:
+                return sym
+
+    if valid_focus:
+        return valid_focus[0]
+    return next(iter(watchlist.keys()), "NVDA")
+
+
 class TelegramCommandRouter:
     """Dispatches Telegram slash commands and general Gemini 4 Argon questions."""
 
@@ -94,11 +145,11 @@ class TelegramCommandRouter:
                 "• `/analyze [TICKER]` — Immediate deep quant & live-news brief.\n"
                 "• `/clear` — Clear conversation memory.\n\n"
                 "*Trading & Watchlist Controls:*\n"
-                "• `/focus <TICKER>` — Switch focus ticker (`NVDA`, `ERIC B`, `MSFT`).\n"
+                "• `/focus <TICKER[,TICKER]>` — Switch focus ticker(s) (`TSLA,NVDA`, `ERIC_B`, `AMD`, `META`).\n"
                 "• `/add_ticker <SYM> <USD|SEK> <STOP> <MINI_FIN> [PARITY]`\n"
-                "• `/fill_mini <UNITS> <PRICE_SEK>` | `/close_mini <EXIT_SEK>`\n"
-                "• `/fill_shares <QTY> <AVG_PRICE>` | `/close_shares <EXIT_PRICE>`\n"
-                "• `/set_stop <STOP> [TARGET]` | `/set_mini <FIN_LVL> [BARRIER] [PARITY]`"
+                "• `/fill_mini [TICKER] <UNITS> <PRICE_SEK> [LONG|SHORT]` | `/close_mini [TICKER] <EXIT_SEK>`\n"
+                "• `/fill_shares [TICKER] <QTY> <AVG_PRICE>` | `/close_shares [TICKER] <EXIT_PRICE>`\n"
+                "• `/set_stop [TICKER] <STOP> [TARGET]` | `/set_mini [TICKER] <FIN_LVL> [BARRIER] [PARITY]`"
             ), None
 
         if cmd == "/reload":
@@ -159,14 +210,15 @@ class TelegramCommandRouter:
         if cmd in ("/fullstatus", "/sys"):
             st = self.status_evaluator.evaluate(portfolio=portfolio)
             diag = st["diagnostics"]
-            focus = portfolio["active_focus_ticker"]
+            focus_raw = str(portfolio["active_focus_ticker"])
+            focus = resolve_focus_ticker(portfolio, prefer_held_mini=True)
             asset = portfolio["watchlist"][focus]
             stats = portfolio["daily_stats"]
             cmds = SystemDiagnostics.run_all_diagnostic_commands()
             body = (
-                f"📋 *Full System & Portfolio Report* (Focus: `{focus}`)\n"
+                f"📋 *Full System & Portfolio Report* (Focus: `{focus_raw}` | Active Card: `{focus}`)\n"
                 f"• *Shares:* `{asset['regular_shares_held']}` @ `{asset['blended_avg_price']}` (Stop: `{asset['hard_stop_price']}` | TP: `{asset['take_profit_price']}`)\n"
-                f"• *Mini:* `{asset['mini_units_held']}`u `{asset['mini_instrument']}` (Fin: `{asset['mini_financing_level']}` | Bar: `{asset['mini_barrier']}`)\n"
+                f"• *Mini:* `{asset['mini_units_held']}`u `{asset['mini_instrument']}` ({asset.get('mini_side', 'LONG')}, Fin: `{asset['mini_financing_level']}` | Bar: `{asset['mini_barrier']}`)\n"
                 f"• *Tactical Cash:* `{portfolio['cash_reserves']['available_tactical_mini_sek']} SEK`\n"
                 f"• *Today ({stats['date']}):* `{stats['trades_executed_today']}` trades | Realized PnL: `{stats['realized_pnl_today_sek']} SEK`\n"
                 f"• *GPU:* `{diag['gpu_temp_c']}°C` | VRAM `{diag['gpu_vram_mb']} MB` | Util `{diag['gpu_util_pct']}%`\n"
@@ -181,7 +233,7 @@ class TelegramCommandRouter:
             return self.qa_agent.answer(question, tracer=tracer), None
 
         if cmd == "/analyze":
-            target_ticker = " ".join(parts[1:]).upper().replace("_", " ") if len(parts) >= 2 else portfolio["active_focus_ticker"]
+            target_ticker = " ".join(parts[1:]).upper().replace("_", " ") if len(parts) >= 2 else resolve_focus_ticker(portfolio)
             q = (
                 f"Perform a comprehensive live quantitative and catalyst analysis on {target_ticker}. "
                 f"Check live price action, recent news/catalysts, USD/SEK if applicable, and evaluate how it "
@@ -195,10 +247,11 @@ class TelegramCommandRouter:
             return "🧹 *Cleared conversation history.*", None
 
         if cmd == "/watchlist":
-            focus = portfolio["active_focus_ticker"]
-            lines = [f"🔭 *Watchlist* (Active Focus: `{focus}`)"]
+            focus_raw = str(portfolio["active_focus_ticker"])
+            focus_set = {x.strip().upper() for x in focus_raw.split(",") if x.strip()}
+            lines = [f"🔭 *Watchlist* (Active Focus: `{focus_raw}`)"]
             for sym, info in portfolio["watchlist"].items():
-                marker = "🎯" if sym == focus else "•"
+                marker = "🎯" if sym.upper() in focus_set else "•"
                 lines.append(
                     f"{marker} *{sym}* ({info['currency']}): "
                     f"Shares `{info['regular_shares_held']}` @ `{info['blended_avg_price']}` | "
@@ -208,25 +261,14 @@ class TelegramCommandRouter:
             return "\n".join(lines), None
 
         if cmd == "/focus" and len(parts) >= 2:
-            alias_map = {
-                "NVIDIA": "NVDA",
-                "TESLA": "TSLA",
-                "MICROSOFT": "MSFT",
-                "APPLE": "AAPL",
-                "GOOGLE": "GOOGL",
-                "ALPHABET": "GOOGL",
-                "AMAZON": "AMZN",
-                "ERICSSON": "ERIC B",
-                "ERIC": "ERIC B",
-            }
             old_focus = portfolio["active_focus_ticker"]
             raw_arg = " ".join(parts[1:]).upper().replace("_", " ")
-            tickers = [alias_map.get(t.strip(), t.strip()) for t in raw_arg.split(",") if t.strip()]
+            tickers = [TICKER_ALIAS_MAP.get(t.strip(), t.strip()) for t in raw_arg.split(",") if t.strip()]
             for t_sym in tickers:
                 if t_sym not in portfolio["watchlist"]:
                     portfolio["watchlist"][t_sym] = {
-                        "exchange": "NASDAQ",
-                        "currency": "USD",
+                        "exchange": "OMXSTO" if t_sym == "ERIC B" else "NASDAQ",
+                        "currency": "SEK" if t_sym == "ERIC B" else "USD",
                         "regular_shares_held": 0,
                         "blended_avg_price": 0.0,
                         "hard_stop_price": 0.0,
@@ -234,9 +276,15 @@ class TelegramCommandRouter:
                         "mini_instrument": f"MINI L {t_sym} AVA",
                         "mini_financing_level": 0.0,
                         "mini_barrier": 0.0,
-                        "mini_parity": 10.0,
+                        "mini_short_instrument": f"MINI S {t_sym} AVA",
+                        "mini_short_financing_level": 0.0,
+                        "mini_short_barrier": 0.0,
+                        "mini_parity": 1.0 if t_sym == "ERIC B" else 10.0,
                         "mini_units_held": 0,
                         "mini_avg_sek": 0.0,
+                        "mini_side": "",
+                        "mini_entry_underlying_price": 0.0,
+                        "mini_initial_risk_r": 0.0,
                     }
             new_ticker = ",".join(tickers)
             portfolio["active_focus_ticker"] = new_ticker
@@ -253,6 +301,7 @@ class TelegramCommandRouter:
 
         if cmd == "/add_ticker" and len(parts) >= 5:
             new_ticker = parts[1].upper().replace("_", " ")
+            new_ticker = TICKER_ALIAS_MAP.get(new_ticker, new_ticker)
             currency = parts[2].upper()
             hard_stop = float(parts[3].replace(",", "."))
             fin_level = float(parts[4].replace(",", "."))
@@ -267,9 +316,15 @@ class TelegramCommandRouter:
                 "mini_instrument": f"MINI L {new_ticker} AVA",
                 "mini_financing_level": fin_level,
                 "mini_barrier": round(fin_level * 1.08, 2),
+                "mini_short_instrument": f"MINI S {new_ticker} AVA",
+                "mini_short_financing_level": round(fin_level * 1.35, 2) if fin_level > 0 else 0.0,
+                "mini_short_barrier": round(fin_level * 1.25, 2) if fin_level > 0 else 0.0,
                 "mini_parity": parity,
                 "mini_units_held": 0,
                 "mini_avg_sek": 0.0,
+                "mini_side": "",
+                "mini_entry_underlying_price": 0.0,
+                "mini_initial_risk_r": 0.0,
             }
             self.repo.save_portfolio(portfolio)
             if tracer:
@@ -282,12 +337,57 @@ class TelegramCommandRouter:
                 )
             return f"➕ *Added Ticker `{new_ticker}`* ({currency}, Stop: `{hard_stop}`, Mini Fin: `{fin_level}`).", None
 
-        if cmd == "/fill_mini" and len(parts) == 3:
-            units, price_sek = int(parts[1]), float(parts[2].replace(",", "."))
-            focus = portfolio["active_focus_ticker"]
+        def _split_opt_ticker(args: list[str]) -> tuple[Optional[str], list[str]]:
+            if not args:
+                return None, args
+            cand = TICKER_ALIAS_MAP.get(args[0].upper().replace("_", " "), args[0].upper().replace("_", " "))
+            if cand in portfolio.get("watchlist", {}):
+                return cand, args[1:]
+            return None, args
+
+        if cmd == "/fill_mini":
+            opt_ticker, rem = _split_opt_ticker(parts[1:])
+            if len(rem) < 2:
+                return "❓ Usage: `/fill_mini [TICKER] <UNITS> <PRICE_SEK> [LONG|SHORT]`", None
+            units, price_sek = int(rem[0]), float(rem[1].replace(",", "."))
+            side_tag = rem[2].upper() if len(rem) >= 3 and rem[2].upper() in ("LONG", "SHORT") else "LONG"
+
+            recent_entry_u = 0.0
+            recent_risk_1r = 0.0
+            focus = opt_ticker
+            try:
+                audit_tail = self.repo.get_recent_audit_tail(10)
+            except Exception:
+                audit_tail = []
+
+            if isinstance(audit_tail, list):
+                expected_act = "BUY_MINI_SHORT" if side_tag == "SHORT" else "BUY_MINI_LONG"
+                for entry in reversed(audit_tail):
+                    if not isinstance(entry, dict):
+                        continue
+                    e_sym = str(entry.get("ticker", "")).upper()
+                    e_dec = entry.get("decision") or {}
+                    e_tel = entry.get("telemetry") or {}
+                    if focus is None and e_sym in portfolio.get("watchlist", {}) and e_dec.get("action") == expected_act:
+                        focus = e_sym
+                    if (focus is None or e_sym == focus.upper()) and isinstance(e_tel, dict) and "close" in e_tel:
+                        recent_entry_u = float(e_tel["close"])
+                        stop_u = float(e_dec.get("underlying_stop_price", 0.0) or 0.0) if isinstance(e_dec, dict) else 0.0
+                        if stop_u > 0 and recent_entry_u > 0:
+                            recent_risk_1r = round(abs(recent_entry_u - stop_u), 4)
+                        break
+
+            if focus is None:
+                focus = resolve_focus_ticker(portfolio)
+
+            asset = portfolio["watchlist"][focus]
             old_cash = portfolio["cash_reserves"]["available_tactical_mini_sek"]
-            portfolio["watchlist"][focus]["mini_units_held"] = units
-            portfolio["watchlist"][focus]["mini_avg_sek"] = price_sek
+            asset["mini_units_held"] = units
+            asset["mini_avg_sek"] = price_sek
+            asset["mini_side"] = side_tag
+            if recent_entry_u > 0:
+                asset["mini_entry_underlying_price"] = recent_entry_u
+                asset["mini_initial_risk_r"] = recent_risk_1r
             portfolio["cash_reserves"]["available_tactical_mini_sek"] = round(old_cash - (units * price_sek), 2)
             portfolio["daily_stats"]["trades_executed_today"] += 1
             self.repo.save_portfolio(portfolio)
@@ -296,14 +396,21 @@ class TelegramCommandRouter:
                     stage="LEDGER_STATE_TRANSFORM",
                     status="OK",
                     input_data={"cash_sek": old_cash, "mini_units": 0},
-                    transformation=f"Logged Mini buy: {units}u {focus} @ {price_sek} SEK",
-                    output_data={"cash_sek": portfolio["cash_reserves"]["available_tactical_mini_sek"], "mini_units": units},
+                    transformation=f"Logged Mini {side_tag} buy: {units}u {focus} @ {price_sek} SEK",
+                    output_data={
+                        "cash_sek": portfolio["cash_reserves"]["available_tactical_mini_sek"],
+                        "mini_units": units,
+                        "mini_side": side_tag,
+                    },
                 )
-            return f"✅ Logged `{units}` units of `{focus}` Mini @ `{price_sek} SEK`.", None
+            return f"✅ Logged `{units}` units of `{focus}` Mini ({side_tag}) @ `{price_sek} SEK`.", None
 
-        if cmd == "/close_mini" and len(parts) == 2:
-            exit_sek = float(parts[1].replace(",", "."))
-            focus = portfolio["active_focus_ticker"]
+        if cmd == "/close_mini":
+            opt_ticker, rem = _split_opt_ticker(parts[1:])
+            if len(rem) != 1:
+                return "❓ Usage: `/close_mini [TICKER] <EXIT_SEK>`", None
+            exit_sek = float(rem[0].replace(",", "."))
+            focus = opt_ticker or resolve_focus_ticker(portfolio, prefer_held_mini=True)
             asset = portfolio["watchlist"][focus]
             units, entry_sek = asset["mini_units_held"], asset["mini_avg_sek"]
             pnl = round((exit_sek - entry_sek) * units, 2)
@@ -317,6 +424,9 @@ class TelegramCommandRouter:
                 portfolio["daily_stats"]["last_stopout_epoch"] = int(time.time())
             asset["mini_units_held"] = 0
             asset["mini_avg_sek"] = 0.0
+            asset["mini_side"] = ""
+            asset["mini_entry_underlying_price"] = 0.0
+            asset["mini_initial_risk_r"] = 0.0
             self.repo.save_portfolio(portfolio)
             self.repo.experience.record_closed_trade(focus, "LIVE_AVANZA_MINI", pnl)
             if tracer:
@@ -330,20 +440,28 @@ class TelegramCommandRouter:
             return f"🔒 Closed `{focus}` Mini @ `{exit_sek} SEK` | Realized PnL: `{pnl} SEK` (Logged to Experience Memory).", None
 
         if cmd == "/experience":
-            target_sym = " ".join(parts[1:]).upper().replace("_", " ") if len(parts) >= 2 else portfolio["active_focus_ticker"]
+            target_sym = (
+                " ".join(parts[1:]).upper().replace("_", " ")
+                if len(parts) >= 2
+                else resolve_focus_ticker(portfolio)
+            )
+            target_sym = TICKER_ALIAS_MAP.get(target_sym, target_sym)
             exp = self.repo.experience.get_ticker_experience(target_sym)
             rules_bullets = "\n".join(f"  • {r}" for r in exp.get("key_learned_rules", []))
             return (
                 f"🧠 *Experience Memory Dossier (`{target_sym}`)*\n"
                 f"• *Preferred Strategy:* `{exp.get('preferred_regime_strategy')}`\n"
                 f"• *Verified Win Rate:* `{exp.get('verified_win_rate_pct')}%` | *Profit Factor:* `{exp.get('verified_profit_factor')}`\n"
-                f"• *22-Day Net Backtest PnL:* `{exp.get('net_backtest_pnl_sek'):+} SEK`\n"
+                f"• *60-Day Net Backtest PnL:* `{exp.get('net_backtest_pnl_sek'):+} SEK`\n"
                 f"• *Learned Rules:*\n{rules_bullets}"
             ), None
 
-        if cmd == "/fill_shares" and len(parts) == 3:
-            qty, price = int(parts[1]), float(parts[2].replace(",", "."))
-            focus = portfolio["active_focus_ticker"]
+        if cmd == "/fill_shares":
+            opt_ticker, rem = _split_opt_ticker(parts[1:])
+            if len(rem) != 2:
+                return "❓ Usage: `/fill_shares [TICKER] <QTY> <AVG_PRICE>`", None
+            qty, price = int(rem[0]), float(rem[1].replace(",", "."))
+            focus = opt_ticker or resolve_focus_ticker(portfolio)
             portfolio["watchlist"][focus]["regular_shares_held"] = qty
             portfolio["watchlist"][focus]["blended_avg_price"] = price
             self.repo.save_portfolio(portfolio)
@@ -357,9 +475,12 @@ class TelegramCommandRouter:
                 )
             return f"✅ Updated `{focus}` regular shares: `{qty}` @ `{price}`.", None
 
-        if cmd == "/close_shares" and len(parts) == 2:
-            exit_price = float(parts[1].replace(",", "."))
-            focus = portfolio["active_focus_ticker"]
+        if cmd == "/close_shares":
+            opt_ticker, rem = _split_opt_ticker(parts[1:])
+            if len(rem) != 1:
+                return "❓ Usage: `/close_shares [TICKER] <EXIT_PRICE>`", None
+            exit_price = float(rem[0].replace(",", "."))
+            focus = opt_ticker or resolve_focus_ticker(portfolio, prefer_held_shares=True)
             asset = portfolio["watchlist"][focus]
             qty, avg = asset["regular_shares_held"], asset["blended_avg_price"]
             pnl_native = round((exit_price - avg) * qty, 2)
@@ -376,13 +497,16 @@ class TelegramCommandRouter:
                 )
             return f"🔒 Closed `{qty}` `{focus}` shares @ `{exit_price}` (Gross PnL: `{pnl_native} {asset['currency']}`).", None
 
-        if cmd == "/set_stop" and len(parts) >= 2:
-            focus = portfolio["active_focus_ticker"]
+        if cmd == "/set_stop":
+            opt_ticker, rem = _split_opt_ticker(parts[1:])
+            if not rem:
+                return "❓ Usage: `/set_stop [TICKER] <STOP> [TARGET]`", None
+            focus = opt_ticker or resolve_focus_ticker(portfolio)
             old_stop = portfolio["watchlist"][focus]["hard_stop_price"]
-            stop_val = float(parts[1].replace(",", "."))
+            stop_val = float(rem[0].replace(",", "."))
             portfolio["watchlist"][focus]["hard_stop_price"] = stop_val
-            if len(parts) >= 3:
-                portfolio["watchlist"][focus]["take_profit_price"] = float(parts[2].replace(",", "."))
+            if len(rem) >= 2:
+                portfolio["watchlist"][focus]["take_profit_price"] = float(rem[1].replace(",", "."))
             self.repo.save_portfolio(portfolio)
             if tracer:
                 tracer.add_stage(
@@ -394,14 +518,17 @@ class TelegramCommandRouter:
                 )
             return f"🛡️ Updated `{focus}` Stop: `{stop_val}` | Target: `{portfolio['watchlist'][focus]['take_profit_price']}`.", None
 
-        if cmd == "/set_mini" and len(parts) >= 2:
-            focus = portfolio["active_focus_ticker"]
-            fin_val = float(parts[1].replace(",", "."))
+        if cmd == "/set_mini":
+            opt_ticker, rem = _split_opt_ticker(parts[1:])
+            if not rem:
+                return "❓ Usage: `/set_mini [TICKER] <FIN_LVL> [BARRIER] [PARITY]`", None
+            focus = opt_ticker or resolve_focus_ticker(portfolio)
+            fin_val = float(rem[0].replace(",", "."))
             portfolio["watchlist"][focus]["mini_financing_level"] = fin_val
-            if len(parts) >= 3:
-                portfolio["watchlist"][focus]["mini_barrier"] = float(parts[2].replace(",", "."))
-            if len(parts) >= 4:
-                portfolio["watchlist"][focus]["mini_parity"] = float(parts[3].replace(",", "."))
+            if len(rem) >= 2:
+                portfolio["watchlist"][focus]["mini_barrier"] = float(rem[1].replace(",", "."))
+            if len(rem) >= 3:
+                portfolio["watchlist"][focus]["mini_parity"] = float(rem[2].replace(",", "."))
             self.repo.save_portfolio(portfolio)
             if tracer:
                 tracer.add_stage(

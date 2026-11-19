@@ -14,16 +14,16 @@ float rvol    = volSma > 0 ? (volume / volSma) : 1.0
 float pd_low  = request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_on)
 float pd_high = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
 
-// 3. 5-Day Kaufman Efficiency Ratio (ER) on Daily Bars for Trend vs Mean-Reversion Classification
-float d_net  = request.security(syminfo.tickerid, "D", math.abs(close[1] - close[6]), lookahead=barmerge.lookahead_on)
-float d_path = request.security(syminfo.tickerid, "D", math.sum(high - low, 5)[1],    lookahead=barmerge.lookahead_on)
-float eff_er = d_path > 0 ? (d_net / d_path) : 0.30
+// 3. True 5-Day Kaufman Efficiency Ratio (ER in [0.0, 1.0]) on Daily Bars for Trend vs Mean-Reversion Classification
+float d_net  = request.security(syminfo.tickerid, "D", math.abs(close[1] - close[6]),                 lookahead=barmerge.lookahead_on)
+float d_path = request.security(syminfo.tickerid, "D", math.sum(math.abs(close - close[1]), 5)[1],    lookahead=barmerge.lookahead_on)
+float eff_er = d_path > 0 ? math.min(1.0, d_net / d_path) : 0.30
 
-// 4. Opening Range High / Low (first 15m bar of regular session, strict v6 bool via timeframe.change)
-bool isNewSession = timeframe.change("D")
+// 4. Opening Range High / Low anchored strictly to regular cash market open (immune to Extended Hours pre-market resets)
+bool isRegularOpen = session.isfirstbar_regular or (barstate.isfirst and not session.ispremarket and not session.ispostmarket)
 var float or_high = na
 var float or_low  = na
-if isNewSession
+if isRegularOpen
     or_high := high
     or_low  := low
 

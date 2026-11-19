@@ -1,6 +1,6 @@
 {
   "account_id": "ISK 5872428",
-  "active_focus_ticker": "TSLA,NVDA",
+  "active_focus_ticker": "AAPL,NVDA,TSLA",
   "daily_stats": {
     "date": "2026-11-19",
     "trades_executed_today": 0,
@@ -8,7 +8,7 @@
     "last_stopout_epoch": 0
   },
   "last_seen_ts_by_ticker": {
-    "NVDA": "2026-11-18T22:45:00Z"
+    "NVDA": "2026-11-19T14:45:02.007Z"
   },
   "cash_reserves": {
     "available_tactical_mini_sek": 14548.0,
@@ -26,9 +26,15 @@
       "mini_instrument": "MINI L NVIDIA AVA 308",
       "mini_financing_level": 118.415,
       "mini_barrier": 130.21,
+      "mini_short_instrument": "MINI S NVIDIA AVA",
+      "mini_short_financing_level": 195.0,
+      "mini_short_barrier": 183.3,
       "mini_parity": 10.0,
       "mini_units_held": 0,
-      "mini_avg_sek": 0.0
+      "mini_avg_sek": 0.0,
+      "mini_side": "",
+      "mini_entry_underlying_price": 0.0,
+      "mini_initial_risk_r": 0.0
     },
     "ERIC B": {
       "exchange": "OMXSTO",
@@ -40,9 +46,15 @@
       "mini_instrument": "MINI L ERICSSON AVA",
       "mini_financing_level": 82.0,
       "mini_barrier": 86.5,
+      "mini_short_instrument": "MINI S ERICSSON AVA",
+      "mini_short_financing_level": 131.5,
+      "mini_short_barrier": 123.6,
       "mini_parity": 1.0,
       "mini_units_held": 0,
-      "mini_avg_sek": 0.0
+      "mini_avg_sek": 0.0,
+      "mini_side": "",
+      "mini_entry_underlying_price": 0.0,
+      "mini_initial_risk_r": 0.0
     },
     "MSFT": {
       "exchange": "NASDAQ",
@@ -54,9 +66,15 @@
       "mini_instrument": "MINI L MICROSOFT AVA",
       "mini_financing_level": 395.0,
       "mini_barrier": 415.0,
+      "mini_short_instrument": "MINI S MICROSOFT AVA",
+      "mini_short_financing_level": 650.0,
+      "mini_short_barrier": 611.0,
       "mini_parity": 100.0,
       "mini_units_held": 0,
-      "mini_avg_sek": 0.0
+      "mini_avg_sek": 0.0,
+      "mini_side": "",
+      "mini_entry_underlying_price": 0.0,
+      "mini_initial_risk_r": 0.0
     },
     "AAPL": {
       "exchange": "NASDAQ",
@@ -68,9 +86,15 @@
       "mini_instrument": "MINI L AAPL AVA",
       "mini_financing_level": 274.91,
       "mini_barrier": 294.15,
+      "mini_short_instrument": "MINI S AAPL AVA",
+      "mini_short_financing_level": 440.0,
+      "mini_short_barrier": 413.6,
       "mini_parity": 10.0,
       "mini_units_held": 0,
-      "mini_avg_sek": 0.0
+      "mini_avg_sek": 0.0,
+      "mini_side": "",
+      "mini_entry_underlying_price": 0.0,
+      "mini_initial_risk_r": 0.0
     },
     "TSLA": {
       "exchange": "NASDAQ",
@@ -82,9 +106,95 @@
       "mini_instrument": "MINI L TSLA AVA",
       "mini_financing_level": 299.3,
       "mini_barrier": 320.25,
+      "mini_short_instrument": "MINI S TSLA AVA",
+      "mini_short_financing_level": 490.0,
+      "mini_short_barrier": 460.6,
       "mini_parity": 10.0,
       "mini_units_held": 0,
-      "mini_avg_sek": 0.0
+      "mini_avg_sek": 0.0,
+      "mini_side": "",
+      "mini_entry_underlying_price": 0.0,
+      "mini_initial_risk_r": 0.0
+    },
+    "AMD": {
+      "exchange": "NASDAQ",
+      "currency": "USD",
+      "regular_shares_held": 0,
+      "blended_avg_price": 0.0,
+      "hard_stop_price": 520.0,
+      "take_profit_price": 570.0,
+      "mini_instrument": "MINI L AMD AVA",
+      "mini_financing_level": 420.0,
+      "mini_barrier": 450.0,
+      "mini_short_instrument": "MINI S AMD AVA",
+      "mini_short_financing_level": 680.0,
+      "mini_short_barrier": 639.2,
+      "mini_parity": 10.0,
+      "mini_units_held": 0,
+      "mini_avg_sek": 0.0,
+      "mini_side": "",
+      "mini_entry_underlying_price": 0.0,
+      "mini_initial_risk_r": 0.0
+    },
+    "GOOGL": {
+      "exchange": "NASDAQ",
+      "currency": "USD",
+      "regular_shares_held": 0,
+      "blended_avg_price": 0.0,
+      "hard_stop_price": 280.0,
+      "take_profit_price": 310.0,
+      "mini_instrument": "MINI L ALPHABET AVA",
+      "mini_financing_level": 225.0,
+      "mini_barrier": 242.0,
+      "mini_short_instrument": "MINI S ALPHABET AVA",
+      "mini_short_financing_level": 368.0,
+      "mini_short_barrier": 345.9,
+      "mini_parity": 10.0,
+      "mini_units_held": 0,
+      "mini_avg_sek": 0.0,
+      "mini_side": "",
+      "mini_entry_underlying_price": 0.0,
+      "mini_initial_risk_r": 0.0
+    },
+    "AMZN": {
+      "exchange": "NASDAQ",
+      "currency": "USD",
+      "regular_shares_held": 0,
+      "blended_avg_price": 0.0,
+      "hard_stop_price": 260.0,
+      "take_profit_price": 288.0,
+      "mini_instrument": "MINI L AMAZON AVA",
+      "mini_financing_level": 210.0,
+      "mini_barrier": 226.0,
+      "mini_short_instrument": "MINI S AMAZON AVA",
+      "mini_short_financing_level": 340.0,
+      "mini_short_barrier": 319.6,
+      "mini_parity": 10.0,
+      "mini_units_held": 0,
+      "mini_avg_sek": 0.0,
+      "mini_side": "",
+      "mini_entry_underlying_price": 0.0,
+      "mini_initial_risk_r": 0.0
+    },
+    "META": {
+      "exchange": "NASDAQ",
+      "currency": "USD",
+      "regular_shares_held": 0,
+      "blended_avg_price": 0.0,
+      "hard_stop_price": 600.0,
+      "take_profit_price": 660.0,
+      "mini_instrument": "MINI L META AVA",
+      "mini_financing_level": 485.0,
+      "mini_barrier": 520.0,
+      "mini_short_instrument": "MINI S META AVA",
+      "mini_short_financing_level": 785.0,
+      "mini_short_barrier": 737.9,
+      "mini_parity": 10.0,
+      "mini_units_held": 0,
+      "mini_avg_sek": 0.0,
+      "mini_side": "",
+      "mini_entry_underlying_price": 0.0,
+      "mini_initial_risk_r": 0.0
     }
   }
 }
