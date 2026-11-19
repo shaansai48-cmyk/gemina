@@ -1,0 +1,56 @@
+{
+  "generated_at": "2026-11-19T02:52:00+01:00",
+  "reference_bar": {
+    "ticker": "NVDA",
+    "time": "2026-11-18T21:45:00Z",
+    "close": 150.85,
+    "low": 150.1,
+    "high": 151.4,
+    "ema4": 151.2,
+    "vwap": 152.0,
+    "or_high": 154.5,
+    "or_low": 150.0,
+    "pd_low": 149.8,
+    "atr14": 2.4,
+    "rsi14": 38.5
+  },
+  "sweep_bar": {
+    "ticker": "NVDA",
+    "time": "2026-11-18T17:15:00Z",
+    "close": 151.35,
+    "low": 150.3,
+    "high": 151.6,
+    "ema4": 151.2,
+    "vwap": 152.0,
+    "or_high": 154.5,
+    "or_low": 150.0,
+    "pd_low": 149.8,
+    "atr14": 2.4,
+    "rsi14": 44.0
+  },
+  "live_committee_traces": [
+    {
+      "trace_id": "sim-baseline-024414-038aa5",
+      "bar_close": 150.85,
+      "profile": "baseline_risk_profile",
+      "l2_claimed_rr": 0.0,
+      "l3a_verified_net_rr": 4.73,
+      "l3b_verdict": "REVISED_BY_CRITIC",
+      "l3b_confidence": 95,
+      "final_action": "HOLD",
+      "final_stop": 148.5
+    },
+    {
+      "trace_id": "sim-relaxed-024446-7a600f",
+      "bar_close": 151.35,
+      "profile": "relaxed_sub_vwap_risk_profile",
+      "l2_claimed_rr": 1.38,
+      "l3a_verified_net_rr": 0.99,
+      "l3b_verdict": "REVISED_BY_CRITIC",
+      "l3b_confidence": 96,
+      "final_action": "HOLD",
+      "final_stop": 149.32
+    }
+  ],
+  "strategy_benchmark_count": 6
+}

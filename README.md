@@ -14,6 +14,7 @@ gemina/                                    # Top-Level Umbrella Repository
 ├── pyproject.toml                         # Core `gemina` package manifest
 ├── docs/
 │   ├── ARCHITECTURE.md                    # Clean Architecture, 4-Level Agent Loop & Layer Guide
+│   ├── STRATEGIES_AND_BENCHMARKS.md       # 6 Stock Strategies Capability Analysis & 21-Scenario NVDA Sensitivity Data
 │   └── TRADINGVIEW_SETUP.md               # Pine Script v6 & Google Apps Script Setup Guide
 ├── gemina/                                # Shared Core Agentic Framework (`gemina.core`)
 │   ├── __init__.py

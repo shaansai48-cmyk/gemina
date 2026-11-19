@@ -1,0 +1,170 @@
+[
+  {
+    "strategy_id": "STRAT_1_ORB_VWAP_BREAKOUT",
+    "name": "15m Opening Range Breakout (ORB) + VWAP Momentum Continuation",
+    "supported_level": "NATIVE_FULL_SUPPORT (100%)",
+    "computed_metrics": {
+      "currency": "USD",
+      "fx_multiplier": 10.16,
+      "mini_theoretical_sek": 37.02,
+      "mini_effective_leverage": 4.25,
+      "regular_shares_net_unrealized_pnl_sek": -432.0,
+      "distance_to_ema4": 0.65,
+      "distance_to_vwap": 1.45
+    },
+    "l3a_math_audit": {
+      "spot": 154.85,
+      "stop": 152.95,
+      "target": 161.5,
+      "llm_claimed_rr": 2.8,
+      "python_verified_net_rr": 2.76,
+      "rr_discrepancy": 0.04,
+      "math_hallucination_detected": false
+    },
+    "initial_action": "BUY_MINI_LONG",
+    "final_enforced_action": "BUY_MINI_LONG",
+    "final_stop": 149.32,
+    "final_mini_trigger_sell_sek": "31.4/31.2",
+    "final_rationale": "15m close ($154.85) broke above OR High ($154.50) and VWAP ($153.40) with EMA4 support. | [STOP FLOOR] Moved stop below pd_low (149.8) to 149.32 (Trigger 31.4 / Sell 31.2 SEK)."
+  },
+  {
+    "strategy_id": "STRAT_2_PD_LOW_LIQUIDITY_SWEEP",
+    "name": "Previous Day Low (pd_low) Liquidity Sweep & EMA4 Reclaim (Stop-Hunt Reversal)",
+    "supported_level": "NATIVE_FULL_SUPPORT (100%)",
+    "computed_metrics": {
+      "currency": "USD",
+      "fx_multiplier": 10.16,
+      "mini_theoretical_sek": 33.46,
+      "mini_effective_leverage": 4.6,
+      "regular_shares_net_unrealized_pnl_sek": -1000.0,
+      "distance_to_ema4": 0.25,
+      "distance_to_vwap": -0.65
+    },
+    "l3a_math_audit": {
+      "spot": 151.35,
+      "stop": 149.6,
+      "target": 158.0,
+      "llm_claimed_rr": 2.9,
+      "python_verified_net_rr": 2.98,
+      "rr_discrepancy": 0.08,
+      "math_hallucination_detected": false
+    },
+    "initial_action": "BUY_MINI_LONG",
+    "final_enforced_action": "BUY_MINI_LONG",
+    "final_stop": 149.32,
+    "final_mini_trigger_sell_sek": "31.4/31.2",
+    "final_rationale": "Swept pd_low ($149.80) down to $149.65 and closed at $151.35 above EMA4 ($151.10). | [STOP FLOOR] Moved stop below pd_low (149.8) to 149.32 (Trigger 31.4 / Sell 31.2 SEK)."
+  },
+  {
+    "strategy_id": "STRAT_3_VWAP_EMA4_PULLBACK_TREND",
+    "name": "Intraday VWAP Trend Pullback with Automatic EMA4 Failure Trailing Exit",
+    "supported_level": "NATIVE_FULL_SUPPORT (100%)",
+    "computed_metrics": {
+      "currency": "USD",
+      "fx_multiplier": 10.16,
+      "mini_theoretical_sek": 32.8,
+      "mini_effective_leverage": 4.67,
+      "regular_shares_net_unrealized_pnl_sek": -1105.0,
+      "distance_to_ema4": -0.5,
+      "distance_to_vwap": -1.3
+    },
+    "l3a_math_audit": {
+      "spot": 150.7,
+      "stop": 149.32,
+      "target": 160.0,
+      "llm_claimed_rr": 2.5,
+      "python_verified_net_rr": 5.24,
+      "rr_discrepancy": 2.74,
+      "math_hallucination_detected": true
+    },
+    "initial_action": "HOLD",
+    "final_enforced_action": "SELL_MINI_LONG",
+    "final_stop": 149.32,
+    "final_mini_trigger_sell_sek": "31.4/31.2",
+    "final_rationale": "[EMA4 FAILURE EXIT] 15m close (150.7) broke below EMA4 (151.2). Exit leveraged Mini immediately."
+  },
+  {
+    "strategy_id": "STRAT_4_NORDIC_ZERO_FX_SWING",
+    "name": "Nordic OMX Zero-FX-Drag Breakout (ERIC B in SEK vs USD FX Drag Comparison)",
+    "supported_level": "NATIVE_FULL_SUPPORT (100%)",
+    "computed_metrics": {
+      "currency": "SEK",
+      "fx_multiplier": 1.0,
+      "mini_theoretical_sek": 22.8,
+      "mini_effective_leverage": 4.6,
+      "regular_shares_net_unrealized_pnl_sek": 0.0,
+      "distance_to_ema4": 0.45,
+      "distance_to_vwap": 0.6
+    },
+    "l3a_math_audit": {
+      "spot": 104.8,
+      "stop": 103.1,
+      "target": 109.5,
+      "llm_claimed_rr": 2.4,
+      "python_verified_net_rr": 2.27,
+      "rr_discrepancy": 0.13,
+      "math_hallucination_detected": false
+    },
+    "initial_action": "BUY_MINI_LONG",
+    "final_enforced_action": "BUY_MINI_LONG",
+    "final_stop": 102.86,
+    "final_mini_trigger_sell_sek": "20.86/20.66",
+    "final_rationale": "OMX Stockholm 0% FX drag breakout above OR High (104.60 SEK) and VWAP (104.20 SEK). | [STOP FLOOR] Moved stop below pd_low (103.1) to 102.86 (Trigger 20.86 / Sell 20.66 SEK)."
+  },
+  {
+    "strategy_id": "STRAT_5_SUB_VWAP_RSI_KNIFE_CATCH",
+    "name": "Pure Sub-VWAP Oversold RSI Mean-Reversion (Without pd_low Sweep)",
+    "supported_level": "INTENTIONALLY_GATED_ON_MINIS / ALLOWED_ON_UNLEVERAGED_SHARES",
+    "computed_metrics": {
+      "currency": "USD",
+      "fx_multiplier": 10.16,
+      "mini_theoretical_sek": 32.95,
+      "mini_effective_leverage": 4.65,
+      "regular_shares_net_unrealized_pnl_sek": -1081.0,
+      "distance_to_ema4": -0.15,
+      "distance_to_vwap": -1.15
+    },
+    "l3a_math_audit": {
+      "spot": 150.85,
+      "stop": 149.32,
+      "target": 156.0,
+      "llm_claimed_rr": 2.6,
+      "python_verified_net_rr": 2.52,
+      "rr_discrepancy": 0.08,
+      "math_hallucination_detected": false
+    },
+    "initial_action": "BUY_MINI_LONG",
+    "final_enforced_action": "HOLD",
+    "final_stop": 149.32,
+    "final_mini_trigger_sell_sek": "31.4/31.2",
+    "final_rationale": "[VETO: SUB-VWAP] Close (150.85) < 15m VWAP (152.0) without pd_low (149.8) sweep."
+  },
+  {
+    "strategy_id": "STRAT_6_UNLEVERAGED_SHARE_ACCUMULATION",
+    "name": "Unleveraged Core Share Dip Accumulation (BUY_SHARES Sub-VWAP with Net R:R >= 1.8)",
+    "supported_level": "NATIVE_FULL_SUPPORT (100%)",
+    "computed_metrics": {
+      "currency": "USD",
+      "fx_multiplier": 10.16,
+      "mini_theoretical_sek": 32.95,
+      "mini_effective_leverage": 4.65,
+      "regular_shares_net_unrealized_pnl_sek": -1081.0,
+      "distance_to_ema4": -0.35,
+      "distance_to_vwap": -1.15
+    },
+    "l3a_math_audit": {
+      "spot": 150.85,
+      "stop": 148.5,
+      "target": 164.5,
+      "llm_claimed_rr": 4.73,
+      "python_verified_net_rr": 4.73,
+      "rr_discrepancy": 0.0,
+      "math_hallucination_detected": false
+    },
+    "initial_action": "BUY_SHARES",
+    "final_enforced_action": "BUY_SHARES",
+    "final_stop": 148.5,
+    "final_mini_trigger_sell_sek": "None/None",
+    "final_rationale": "Unleveraged BUY_SHARES bypasses the Mini-only sub-VWAP gate when R:R >= 1.8."
+  }
+]
