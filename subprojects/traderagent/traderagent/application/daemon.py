@@ -114,6 +114,7 @@ class TraderAgentDaemon:
                     {"ts": b.get("ts"), "close": b.get("telemetry", {}).get("close"), "action": b.get("decision", {}).get("action")}
                     for b in self.repo.get_recent_audit_tail(4, ticker=incoming_ticker)
                 ]
+                ticker_exp = self.repo.experience.get_ticker_experience(incoming_ticker)
 
                 decision = self.committee.evaluate_bar(
                     telemetry=payload,
@@ -122,6 +123,7 @@ class TraderAgentDaemon:
                     risk=risk,
                     metrics=metrics,
                     recent_ticker_bars=recent_ticker_bars,
+                    ticker_experience=ticker_exp,
                     tracer=tracer,
                 )
 
@@ -141,9 +143,10 @@ class TraderAgentDaemon:
                 )
 
                 if st["is_red"]:
+                    guide_block = f"\n\n{decision.avanza_execution_guide}" if decision.avanza_execution_guide else ""
                     alert_body = (
                         f"📊 *{incoming_ticker} 15m Quant Signal* (Close: `{payload['close']}`)\n"
-                        f"• *Regime:* `{decision.market_regime}`\n"
+                        f"• *Regime:* `{decision.market_regime}` (`{metrics.get('regime_archetype', 'ADAPTIVE')}`)\n"
                         f"• *Action:* *{decision.action}* (`{decision.quantity}`x `{decision.instrument}`)\n"
                         f"• *Confidence:* `{decision.confidence_score}/100` (`{decision.critic_verdict}`)\n"
                         f"• *Limit:* `{decision.limit_price}` | *Target:* `{decision.take_profit_target}`\n"
@@ -152,6 +155,7 @@ class TraderAgentDaemon:
                         f"• *Critic Audit:* {decision.critic_notes}\n"
                         f"• *Rationale:* {decision.rationale}\n"
                         f"• *Trace:* `{tracer.trace_id}`"
+                        f"{guide_block}"
                     )
                 else:
                     alert_body = (

@@ -8,15 +8,17 @@ from datetime import datetime
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 from traderagent.config import TraderConfig
+from traderagent.infrastructure.experience_memory import ExperienceMemoryRepository
 
 CET = ZoneInfo("Europe/Stockholm")
 
 
 class StateRepository:
-    """Crash-safe persistence for portfolio.json, risk_profile.json, trade_audit.jsonl, and pipeline_trace.jsonl."""
+    """Crash-safe persistence for portfolio.json, risk_profile.json, experience_memory.json, trade_audit.jsonl, and pipeline_trace.jsonl."""
 
     def __init__(self, config: TraderConfig):
         self.config = config
+        self.experience = ExperienceMemoryRepository(config.experience_memory_path)
 
     @staticmethod
     def load_json(path: str) -> dict[str, Any]:

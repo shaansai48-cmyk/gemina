@@ -24,6 +24,7 @@ class TraderConfig:
     risk_path: str
     audit_log_path: str
     pipeline_trace_path: str
+    experience_memory_path: str
     env_file_path: str
 
     @classmethod
@@ -51,5 +52,6 @@ class TraderConfig:
             risk_path=str(resolved_data / "risk_profile.json"),
             audit_log_path=str(resolved_data / "trade_audit.jsonl"),
             pipeline_trace_path=str(resolved_data / "pipeline_trace.jsonl"),
+            experience_memory_path=str(resolved_data / "experience_memory.json"),
             env_file_path=str(resolved_env),
         )

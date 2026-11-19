@@ -21,7 +21,9 @@
         "BUY_SHARES",
         "SELL_SHARES",
         "BUY_MINI_LONG",
-        "SELL_MINI_LONG"
+        "SELL_MINI_LONG",
+        "BUY_MINI_SHORT",
+        "SELL_MINI_SHORT"
       ],
       "title": "Action",
       "type": "string"
@@ -102,6 +104,11 @@
     "critic_notes": {
       "default": "",
       "title": "Critic Notes",
+      "type": "string"
+    },
+    "avanza_execution_guide": {
+      "default": "",
+      "title": "Avanza Execution Guide",
       "type": "string"
     }
   },

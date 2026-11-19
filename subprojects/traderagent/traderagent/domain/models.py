@@ -1,5 +1,7 @@
 """
 Domain Entities & Value Objects for Quantitative Trading Decisions.
+Supports bidirectional trading (MINI L Longs, MINI S Shorts, and Regular Shares)
+and step-by-step Avanza order placement instructions.
 """
 from typing import Literal, Optional
 from pydantic import BaseModel, Field
@@ -17,6 +19,8 @@ TradeActionType = Literal[
     "SELL_SHARES",
     "BUY_MINI_LONG",
     "SELL_MINI_LONG",
+    "BUY_MINI_SHORT",
+    "SELL_MINI_SHORT",
 ]
 
 
@@ -63,3 +67,4 @@ class TradeDecision(BaseModel):
     confidence_score: int = 75
     critic_verdict: str = "APPROVED"
     critic_notes: str = ""
+    avanza_execution_guide: str = ""

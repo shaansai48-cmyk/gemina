@@ -1,16 +1,25 @@
 //@version=6
 indicator("Avanza Deep-Quant 15m Telemetry Engine (v6)", shorttitle="AvanzaQuant15m", overlay=true)
 
-// 1. Core Moving Averages & Oscillators
+// 1. Core Moving Averages, Multi-Day EMA50, Oscillators & Relative Volume (RVOL)
 float ema4    = ta.ema(close, 4)
+float ema50   = ta.ema(close, 50)
 float vwapVal = ta.vwap(hlc3)
 float atr14   = ta.atr(14)
 float rsi14   = ta.rsi(close, 14)
+float volSma  = ta.sma(volume, 20)
+float rvol    = volSma > 0 ? (volume / volSma) : 1.0
 
-// 2. Previous Day Low (pd_low) - non-repainting completed daily bar
-float pd_low = request.security(syminfo.tickerid, "D", low[1], lookahead=barmerge.lookahead_on)
+// 2. Previous Day Low (pd_low) & Previous Day High (pd_high) - non-repainting completed daily bar
+float pd_low  = request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_on)
+float pd_high = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_on)
 
-// 3. Opening Range High / Low (first 15m bar of regular session, strict v6 bool via timeframe.change)
+// 3. 5-Day Kaufman Efficiency Ratio (ER) on Daily Bars for Trend vs Mean-Reversion Classification
+float d_net  = request.security(syminfo.tickerid, "D", math.abs(close[1] - close[6]), lookahead=barmerge.lookahead_on)
+float d_path = request.security(syminfo.tickerid, "D", math.sum(high - low, 5)[1],    lookahead=barmerge.lookahead_on)
+float eff_er = d_path > 0 ? (d_net / d_path) : 0.30
+
+// 4. Opening Range High / Low (first 15m bar of regular session, strict v6 bool via timeframe.change)
 bool isNewSession = timeframe.change("D")
 var float or_high = na
 var float or_low  = na
@@ -18,16 +27,17 @@ if isNewSession
     or_high := high
     or_low  := low
 
-// 4. Visual Chart Overlays
+// 5. Visual Chart Overlays
 plot(ema4,    "EMA 4",   color=color.new(color.aqua, 0),   linewidth=2)
+plot(ema50,   "EMA 50",  color=color.new(color.purple, 0), linewidth=2)
 plot(vwapVal, "VWAP",    color=color.new(color.orange, 0), linewidth=2)
 plot(pd_low,  "PD Low",  color=color.new(color.red, 20),   style=plot.style_stepline)
+plot(pd_high, "PD High", color=color.new(color.teal, 20),  style=plot.style_stepline)
 plot(or_high, "OR High", color=color.new(color.green, 40), style=plot.style_circles)
 plot(or_low,  "OR Low",  color=color.new(color.maroon, 40),style=plot.style_circles)
 
-// 5. Native Webhook JSON Alert Emission on Confirmed 15m Bar Close
+// 6. Native Webhook JSON Alert Emission on Confirmed 15m Bar Close
 if barstate.isconfirmed
-    // Normalize symbols like "ERIC_B" -> "ERIC B" to match portfolio.json watchlist keys
     string cleanTicker = str.replace_all(syminfo.ticker, "_", " ")
     string isoTime     = str.format_time(time_close, "yyyy-MM-dd'T'HH:mm:ss'Z'", "UTC")
 
@@ -37,10 +47,14 @@ if barstate.isconfirmed
                      '"low":' + str.tostring(low, "#.##") + ',' +
                      '"high":' + str.tostring(high, "#.##") + ',' +
                      '"ema4":' + str.tostring(ema4, "#.##") + ',' +
+                     '"ema50":' + str.tostring(ema50, "#.##") + ',' +
                      '"vwap":' + str.tostring(vwapVal, "#.##") + ',' +
                      '"or_high":' + str.tostring(nz(or_high, high), "#.##") + ',' +
                      '"or_low":' + str.tostring(nz(or_low, low), "#.##") + ',' +
                      '"pd_low":' + str.tostring(nz(pd_low, low), "#.##") + ',' +
+                     '"pd_high":' + str.tostring(nz(pd_high, high), "#.##") + ',' +
                      '"atr14":' + str.tostring(atr14, "#.##") + ',' +
-                     '"rsi14":' + str.tostring(rsi14, "#.##") + '}'
+                     '"rsi14":' + str.tostring(rsi14, "#.##") + ',' +
+                     '"rvol":' + str.tostring(rvol, "#.##") + ',' +
+                     '"efficiency_ratio":' + str.tostring(eff_er, "#.##") + '}'
     alert(payload, alert.freq_once_per_bar_close)

@@ -160,11 +160,19 @@ class TestGeminaTraderAgentArchitecture(unittest.TestCase):
         self.assertEqual(d5.action, "HOLD")
         self.assertIn("VETO: LOW R:R", d5.rationale)
 
-        # 6. Structural Stop-Loss Floor Below pd_low (149.80 - 0.20*2.40 = 149.32)
+        # 6. Structural Stop-Loss Floor Below pd_low (149.80 - 0.20*2.40 = 149.32) & Avanza Order Placement Guide
         d6 = enforce_hard_quant_guardrails(self._make_buy_decision(), telem_bull, self.portfolio, self.nvda_asset, r_open, 10.16)
         self.assertEqual(d6.action, "BUY_MINI_LONG")
         self.assertEqual(d6.underlying_stop_price, 149.32)
         self.assertEqual(round(d6.avanza_stop_trigger_sek - d6.avanza_stop_sell_sek, 2), 0.20)
+        self.assertIn("HOW TO PLACE THIS ORDER IN AVANZA", d6.avanza_execution_guide)
+        self.assertIn("Triggerkurs:", d6.avanza_execution_guide)
+        self.assertIn("Säljkurs:", d6.avanza_execution_guide)
+        self.assertIn("/fill_mini", d6.avanza_execution_guide)
+
+        # 6b. Experience Memory Repository Check
+        exp = self.plugin.daemon.repo.experience.get_ticker_experience("AMZN")
+        self.assertEqual(exp["verified_win_rate_pct"], 100.0)
 
         # 7. Auto-Exit Active Mini Long on EMA4 Failure (close < 151.20 - 0.15*2.40 = 150.84)
         asset_held = copy.deepcopy(self.nvda_asset)

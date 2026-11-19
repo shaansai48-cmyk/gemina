@@ -304,15 +304,28 @@ class TelegramCommandRouter:
             asset["mini_units_held"] = 0
             asset["mini_avg_sek"] = 0.0
             self.repo.save_portfolio(portfolio)
+            self.repo.experience.record_closed_trade(focus, "LIVE_AVANZA_MINI", pnl)
             if tracer:
                 tracer.add_stage(
                     stage="LEDGER_STATE_TRANSFORM",
                     status="OK",
                     input_data={"mini_units": units, "entry_sek": entry_sek},
-                    transformation=f"Closed {focus} Mini @ {exit_sek} SEK (PnL: {pnl} SEK)",
+                    transformation=f"Closed {focus} Mini @ {exit_sek} SEK (PnL: {pnl} SEK) & updated experience_memory.json",
                     output_data={"realized_pnl_today_sek": portfolio["daily_stats"]["realized_pnl_today_sek"]},
                 )
-            return f"🔒 Closed `{focus}` Mini @ `{exit_sek} SEK` | Realized PnL: `{pnl} SEK`.", None
+            return f"🔒 Closed `{focus}` Mini @ `{exit_sek} SEK` | Realized PnL: `{pnl} SEK` (Logged to Experience Memory).", None
+
+        if cmd == "/experience":
+            target_sym = " ".join(parts[1:]).upper().replace("_", " ") if len(parts) >= 2 else portfolio["active_focus_ticker"]
+            exp = self.repo.experience.get_ticker_experience(target_sym)
+            rules_bullets = "\n".join(f"  • {r}" for r in exp.get("key_learned_rules", []))
+            return (
+                f"🧠 *Experience Memory Dossier (`{target_sym}`)*\n"
+                f"• *Preferred Strategy:* `{exp.get('preferred_regime_strategy')}`\n"
+                f"• *Verified Win Rate:* `{exp.get('verified_win_rate_pct')}%` | *Profit Factor:* `{exp.get('verified_profit_factor')}`\n"
+                f"• *22-Day Net Backtest PnL:* `{exp.get('net_backtest_pnl_sek'):+} SEK`\n"
+                f"• *Learned Rules:*\n{rules_bullets}"
+            ), None
 
         if cmd == "/fill_shares" and len(parts) == 3:
             qty, price = int(parts[1]), float(parts[2].replace(",", "."))

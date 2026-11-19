@@ -29,13 +29,18 @@ class QuantAgentCommittee:
         self.llm = llm_router
 
     def run_l1_catalyst_agent(
-        self, ticker: str, system_instruction: str, tracer: Optional[PipelineTracer] = None
+        self,
+        ticker: str,
+        system_instruction: str,
+        bar_time: str = "",
+        tracer: Optional[PipelineTracer] = None,
     ) -> str:
         t0 = time.perf_counter()
+        date_clause = f" as of date/time {bar_time[:10]}" if bar_time else ""
         prompt = (
             f"[LEVEL-1 CATALYST & MACRO AGENT]\n"
-            f"Search live breaking financial news, intraday catalysts, analyst/earnings updates for {ticker}, "
-            f"and the current USD/SEK exchange rate. Output:\n"
+            f"Search breaking financial news, intraday catalysts, analyst/earnings updates for {ticker}{date_clause}, "
+            f"and the USD/SEK exchange rate. Output:\n"
             f"1. Catalyst Sentiment: [BULLISH / NEUTRAL / BEARISH_HEADWIND / BINARY_EVENT_RISK]\n"
             f"2. Key Drivers (2 concise bullets)\n"
             f"3. Live USD/SEK rate."
@@ -52,8 +57,8 @@ class QuantAgentCommittee:
                 tracer.add_stage(
                     stage="L1_CATALYST_AGENT",
                     status="OK",
-                    input_data={"ticker": ticker, "model": model_used},
-                    transformation="Level-1 Agent synthesized live catalyst sentiment & USD/SEK via Google Search",
+                    input_data={"ticker": ticker, "bar_date": bar_time[:10], "model": model_used},
+                    transformation=f"Level-1 Agent synthesized live catalyst sentiment & USD/SEK via Google Search ({bar_time[:10] or 'live'})",
                     output_data={"summary_chars": len(text), "preview": text[:140]},
                     duration_ms=(time.perf_counter() - t0) * 1000.0,
                 )
@@ -168,6 +173,7 @@ class QuantAgentCommittee:
         risk: dict,
         metrics: dict,
         recent_ticker_bars: list[dict],
+        ticker_experience: Optional[dict[str, Any]] = None,
         tracer: Optional[PipelineTracer] = None,
     ) -> TradeDecision:
         # Load declarative subagent persona (`agents/subagent.md`) & skills (`skills/*.md`)
@@ -181,7 +187,7 @@ class QuantAgentCommittee:
                 input_data={"agent_md": Path(sub_def.source_path).name, "skills": sub_def.skill_names},
                 transformation=(
                     f"Loaded declarative subagent '{sub_def.name}' ({sub_def.role}) "
-                    f"with {len(sub_def.loaded_skills)} skill(s)"
+                    f"with {len(sub_def.loaded_skills)} skill(s) & empirical experience memory"
                 ),
                 output_data={
                     "compiled_prompt_chars": len(base_system_prompt),
@@ -196,6 +202,7 @@ class QuantAgentCommittee:
             "telemetry_15m": telemetry,
             "recent_15m_trajectory": recent_ticker_bars,
             "computed_metrics": metrics,
+            "ticker_experience_memory": ticker_experience or {},
             "asset_state": asset,
             "daily_stats": portfolio["daily_stats"],
             "available_cash_sek": portfolio["cash_reserves"]["available_tactical_mini_sek"],
@@ -204,7 +211,10 @@ class QuantAgentCommittee:
 
         # Level 1: Catalyst & Macro Search Grounding Agent
         live_news_context = self.run_l1_catalyst_agent(
-            telemetry["ticker"], system_instruction=base_system_prompt, tracer=tracer
+            telemetry["ticker"],
+            system_instruction=base_system_prompt,
+            bar_time=str(telemetry.get("time", "")),
+            tracer=tracer,
         )
 
         # Level 2: Alpha Strategist Proposal Agent

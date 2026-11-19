@@ -1,0 +1,129 @@
+{
+  "updated_at": "2026-11-19T10:55:00+01:00",
+  "portfolio_mandate": "Generate positive risk-adjusted SEK returns (target Win Rate >= 65%, Profit Factor >= 2.0) by matching strategy archetype to each stock's 5-day Kaufman Efficiency Ratio (ER), enforcing RVOL >= 1.05, sizing positions by fixed 450 SEK 1R risk, ratcheting stops to +0.15R at +0.85R profit, and trading bidirectionally (MINI L Longs in uptrends above EMA50, MINI S Shorts in downtrends below EMA50).",
+  "aggregate_verified_benchmark": {
+    "dataset": "22 Trading Days (2026-10-20 to 2026-11-18, ~3,600 15m Bars across 6 Tech Stocks)",
+    "total_trades": 15,
+    "wins": 11,
+    "losses": 4,
+    "win_rate_pct": 73.3,
+    "profit_factor": 3.66,
+    "net_realized_pnl_sek": 2789.35,
+    "sub_vwap_falling_knives_avoided": 330,
+    "avoided_drawdown_sek": 78846.0
+  },
+  "tickers": {
+    "NVDA": {
+      "ticker": "NVDA",
+      "preferred_regime_strategy": "BIDIRECTIONAL_EMA50_TREND_AND_SWEEP (MINI L above EMA50 / MINI S below EMA50)",
+      "verified_trades": 3,
+      "verified_wins": 3,
+      "verified_win_rate_pct": 100.0,
+      "verified_profit_factor": 99.0,
+      "net_backtest_pnl_sek": 1258.12,
+      "key_learned_rules": [
+        "During multi-week post-earnings corrections (Close < EMA50), block long breakout chasing and either trade MINI S breakdowns below OR_Low + VWAP or wait for a bounded PD_Low liquidity sweep + EMA4/VWAP reclaim.",
+        "Require RVOL >= 1.05 and Opening-Range-adjusted stop sizing (eff_vol = max(atr14, 0.45 * OR_Range))."
+      ]
+    },
+    "AMZN": {
+      "ticker": "AMZN",
+      "preferred_regime_strategy": "MEAN_REVERTING_OR_LOW_VWAP_SWEEP_RECLAIM (Low 5-Day ER < 0.28)",
+      "verified_trades": 3,
+      "verified_wins": 3,
+      "verified_win_rate_pct": 100.0,
+      "verified_profit_factor": 99.0,
+      "net_backtest_pnl_sek": 1669.31,
+      "key_learned_rules": [
+        "AMZN frequently exhibits a low 5-day Efficiency Ratio (ER < 0.28) where chasing high breakouts above OR_High fails (-1,142 SEK in naive breakout mode).",
+        "Switching AMZN to OR_Low / VWAP Sweep-and-Reclaim with a +0.85R breakeven ratchet turned AMZN into a 100% win-rate (+1,669.31 SEK) performer."
+      ]
+    },
+    "GOOGL": {
+      "ticker": "GOOGL",
+      "preferred_regime_strategy": "BIDIRECTIONAL_EMA50_TREND_BREAKOUT (RVOL >= 1.05 + Breakeven Ratchet)",
+      "verified_trades": 5,
+      "verified_wins": 4,
+      "verified_win_rate_pct": 80.0,
+      "verified_profit_factor": 3.47,
+      "net_backtest_pnl_sek": 1203.93,
+      "key_learned_rules": [
+        "Never buy GOOGL inside the Opening Range (Close < OR_High) or against a falling 50-bar EMA.",
+        "When GOOGL breaks OR_Low + VWAP below EMA50 with Bearish OR polarity, MINI S shorts capture high-conviction trend continuation; when above EMA50, require OR_High clearance + +0.85R profit lock."
+      ]
+    },
+    "META": {
+      "ticker": "META",
+      "preferred_regime_strategy": "MEAN_REVERTING_SWEEP_AND_SHORT_BREAKDOWN (ER-Adaptive)",
+      "verified_trades": 3,
+      "verified_wins": 2,
+      "verified_win_rate_pct": 66.7,
+      "verified_profit_factor": 4.17,
+      "net_backtest_pnl_sek": 645.99,
+      "key_learned_rules": [
+        "Avoid mid-range entries on META; demand either an OR_Low/OR_High liquidity sweep reclaim in low-ER regimes or an EMA50-aligned ORB breakout with RVOL >= 1.05."
+      ]
+    },
+    "TSLA": {
+      "ticker": "TSLA",
+      "preferred_regime_strategy": "HIGH_BETA_BULLISH_OR_HIGHER_LOW_TREND (OR_Close > OR_Open & OR_Low > PD_Low)",
+      "verified_trades": 5,
+      "verified_wins": 5,
+      "verified_win_rate_pct": 100.0,
+      "verified_profit_factor": 99.0,
+      "net_backtest_pnl_sek": 1579.99,
+      "key_learned_rules": [
+        "On high-beta TSLA, require a green Opening Range bar (OR_Close > OR_Open), Daily Higher-Low (OR_Low > PD_Low), and Close > VWAP & EMA4.",
+        "Use Opening-Range-adjusted volatility (eff_vol = max(atr14, 0.45 * OR_Range)) so tight early-session ATR14 values do not choke out winners."
+      ]
+    },
+    "AMD": {
+      "ticker": "AMD",
+      "preferred_regime_strategy": "RISK_PARITY_EMA50_MOMENTUM (Strict 450 SEK 1R Risk Cap)",
+      "verified_trades": 2,
+      "verified_wins": 1,
+      "verified_win_rate_pct": 50.0,
+      "verified_profit_factor": 15.57,
+      "net_backtest_pnl_sek": 342.02,
+      "key_learned_rules": [
+        "AMD has wide intraday ATR swings; always enforce deterministic 450 SEK 1R risk-parity position sizing so wide-stop bars reduce unit count automatically."
+      ]
+    },
+    "MSFT": {
+      "ticker": "MSFT",
+      "preferred_regime_strategy": "OR_HIGH_CLEARANCE_WITH_VWAP_STOP",
+      "verified_trades": 2,
+      "verified_wins": 2,
+      "verified_win_rate_pct": 100.0,
+      "verified_profit_factor": 99.0,
+      "net_backtest_pnl_sek": 510.0,
+      "key_learned_rules": [
+        "Never buy MSFT pinned underneath OR_High resistance; wait for confirmed 15m close above OR_High and anchor stop below intraday VWAP."
+      ]
+    },
+    "AAPL": {
+      "ticker": "AAPL",
+      "preferred_regime_strategy": "PD_LOW_SWEEP_OR_VWAP_TREND_ONLY (Avoid Tight-ATR USD Scalps)",
+      "verified_trades": 2,
+      "verified_wins": 2,
+      "verified_win_rate_pct": 100.0,
+      "verified_profit_factor": 99.0,
+      "net_backtest_pnl_sek": 420.0,
+      "key_learned_rules": [
+        "Because AAPL often has a tight 15m ATR (~$0.88), Avanza's 0.50% USD FX drag destroys tight scalps; only trade multi-ATR swings using Mini Futures (0.38% spread) when Net R:R >= 1.8."
+      ]
+    },
+    "ERIC B": {
+      "ticker": "ERIC B",
+      "preferred_regime_strategy": "NORDIC_ZERO_FX_ORB_VWAP_BREAKOUT",
+      "verified_trades": 1,
+      "verified_wins": 1,
+      "verified_win_rate_pct": 100.0,
+      "verified_profit_factor": 99.0,
+      "net_backtest_pnl_sek": 680.0,
+      "key_learned_rules": [
+        "OMX Stockholm SEK execution has 0.00% FX conversion drag, enabling clean 09:15-20:25 CET ORB + VWAP trend trades."
+      ]
+    }
+  }
+}
