@@ -348,8 +348,28 @@ class TelegramCommandRouter:
         if cmd == "/fill_mini":
             opt_ticker, rem = _split_opt_ticker(parts[1:])
             if len(rem) < 2:
-                return "❓ Usage: `/fill_mini [TICKER] <UNITS> <PRICE_SEK> [LONG|SHORT]`", None
-            units, price_sek = int(rem[0]), float(rem[1].replace(",", "."))
+                return (
+                    "❓ Usage: `/fill_mini [TICKER] <UNITS> <PRICE_SEK> [LONG|SHORT]`\n"
+                    "• _Example:_ `/fill_mini AAPL 65 76.50 LONG`",
+                    None,
+                )
+            if rem[1].upper() in ("LONG", "SHORT"):
+                return (
+                    "⚠️ Missing Mini unit fill price (`<PRICE_SEK>`). Please specify both quantity and SEK fill price.\n"
+                    "• *Usage:* `/fill_mini [TICKER] <UNITS> <PRICE_SEK> [LONG|SHORT]`\n"
+                    "• _Example:_ `/fill_mini AAPL 65 76.50 LONG`",
+                    None,
+                )
+            try:
+                units = int(rem[0])
+                price_sek = float(rem[1].replace(",", "."))
+            except ValueError:
+                return (
+                    "⚠️ Invalid number in `/fill_mini`.\n"
+                    "• *Usage:* `/fill_mini [TICKER] <UNITS> <PRICE_SEK> [LONG|SHORT]`\n"
+                    "• _Example:_ `/fill_mini AAPL 65 76.50 LONG`",
+                    None,
+                )
             side_tag = rem[2].upper() if len(rem) >= 3 and rem[2].upper() in ("LONG", "SHORT") else "LONG"
 
             recent_entry_u = 0.0
@@ -622,8 +642,22 @@ class TelegramCommandRouter:
                     tracer.complete("COMPLETED")
                     continue
 
-            reply_body, st_override = self.execute_text_command(text, tracer=tracer)
-            self.telegram.send_message(reply_body, include_ticker=True, status_info=st_override, tracer=tracer)
-            tracer.complete("COMPLETED")
+            try:
+                reply_body, st_override = self.execute_text_command(text, tracer=tracer)
+                self.telegram.send_message(reply_body, include_ticker=True, status_info=st_override, tracer=tracer)
+                tracer.complete("COMPLETED")
+            except Exception as exc:
+                tracer.add_stage(
+                    stage="COMMAND_ERROR",
+                    status="ERROR",
+                    input_data={"text": text},
+                    transformation=f"Handled exception without crashing daemon: {type(exc).__name__}: {exc}",
+                    output_data={},
+                )
+                tracer.complete("ERROR_HANDLED")
+                self.telegram.send_message(
+                    f"⚠️ Command error (`{type(exc).__name__}`): `{str(exc)[:180]}`\nSend `/help` to view valid syntax.",
+                    tracer=tracer,
+                )
 
         return last_update_id

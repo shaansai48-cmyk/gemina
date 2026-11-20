@@ -459,6 +459,9 @@ class TestGeminaTraderAgentArchitecture(unittest.TestCase):
                 self.assertIn("TSLA,NVDA", body_full)
                 self.assertIsNotNone(st_full)
 
+                msg_bad, _ = router.execute_text_command("/fill_mini AAPL 5000 long")
+                self.assertIn("Missing Mini unit fill price", msg_bad)
+
                 msg_fill, _ = router.execute_text_command("/fill_mini TSLA 50 15.20 SHORT")
                 self.assertIn("MINI", msg_fill.upper())
                 p_after_fill = tmp_repo.load_portfolio()

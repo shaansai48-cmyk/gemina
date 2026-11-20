@@ -2,13 +2,13 @@
   "account_id": "ISK 5872428",
   "active_focus_ticker": "AAPL,NVDA,TSLA",
   "daily_stats": {
-    "date": "2026-11-19",
+    "date": "2026-11-20",
     "trades_executed_today": 0,
     "realized_pnl_today_sek": 0.0,
     "last_stopout_epoch": 0
   },
   "last_seen_ts_by_ticker": {
-    "NVDA": "2026-11-19T14:45:02.007Z"
+    "NVDA": "2026-11-19T21:00:05.356Z"
   },
   "cash_reserves": {
     "available_tactical_mini_sek": 14548.0,
