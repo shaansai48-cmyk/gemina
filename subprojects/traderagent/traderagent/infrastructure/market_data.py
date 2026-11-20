@@ -26,11 +26,12 @@ class MarketDataError(RuntimeError):
 
 
 class YahooFinanceClient:
-    """Thread-safe Yahoo Finance v8 chart & FX client with shared TTL caches."""
+    """Thread-safe Yahoo Finance v8 chart & FX client with multi-provider fallbacks and TTL caches."""
 
     _cache_lock = threading.Lock()
     _series_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
     _fx_cache: Optional[tuple[float, float, str]] = None
+    _yahoo_cooldown_until: float = 0.0
 
     def __init__(
         self,
@@ -46,10 +47,21 @@ class YahooFinanceClient:
 
     @classmethod
     def clear_cache(cls) -> None:
-        """Clears shared chart and FX caches (useful in deterministic tests)."""
+        """Clears shared chart, FX caches, and 429 cooldown (useful in deterministic tests)."""
         with cls._cache_lock:
             cls._series_cache.clear()
             cls._fx_cache = None
+            cls._yahoo_cooldown_until = 0.0
+
+    @classmethod
+    def _mark_yahoo_429(cls, cooldown_sec: float = 180.0) -> None:
+        with cls._cache_lock:
+            cls._yahoo_cooldown_until = max(cls._yahoo_cooldown_until, time.monotonic() + cooldown_sec)
+
+    @classmethod
+    def _is_yahoo_cooled_down(cls) -> bool:
+        with cls._cache_lock:
+            return time.monotonic() < cls._yahoo_cooldown_until
 
     @staticmethod
     def to_yahoo_symbol(ticker: str, exchange: str = "") -> str:
@@ -69,64 +81,117 @@ class YahooFinanceClient:
             return f"{norm.replace(' ', '-')}.ST"
         return norm
 
-    def _http_get_json(self, url: str) -> dict[str, Any]:
-        headers = {"User-Agent": DEFAULT_USER_AGENT}
+    def _raw_get_json(self, url: str) -> dict[str, Any]:
+        headers = {"User-Agent": DEFAULT_USER_AGENT, "Accept": "application/json"}
         if self._session is not None:
             resp = self._session.get(url, headers=headers, timeout=self.timeout)
         else:
             resp = requests.get(url, headers=headers, timeout=self.timeout)
+        if resp.status_code == 429:
+            self._mark_yahoo_429()
         resp.raise_for_status()
-        data = resp.json()
-        if not isinstance(data, dict) or "chart" not in data:
-            raise MarketDataError(f"Malformed Yahoo Finance response from {url}")
-        return data
+        return resp.json()
+
+    def _http_get_json(self, url: str) -> dict[str, Any]:
+        last_exc: Optional[Exception] = None
+        candidates = [url]
+        if "query1.finance.yahoo.com" in url:
+            candidates.append(url.replace("query1.finance.yahoo.com", "query2.finance.yahoo.com", 1))
+        for cand_url in candidates:
+            try:
+                data = self._raw_get_json(cand_url)
+                if not isinstance(data, dict) or "chart" not in data:
+                    raise MarketDataError(f"Malformed Yahoo Finance response from {cand_url}")
+                return data
+            except requests.HTTPError as exc:
+                last_exc = exc
+                if exc.response is not None and exc.response.status_code == 429:
+                    self._mark_yahoo_429()
+                continue
+            except Exception as exc:
+                last_exc = exc
+                continue
+        raise last_exc if last_exc is not None else MarketDataError(f"Failed GET {url}")
+
+    def _fetch_usd_sek_fallback_providers(self) -> Optional[tuple[float, str]]:
+        providers = [
+            ("frankfurter_live", "https://api.frankfurter.dev/v1/latest?base=USD&symbols=SEK", lambda d: (d.get("rates") or {}).get("SEK")),
+            ("er_api_live", "https://open.er-api.com/v6/latest/USD", lambda d: (d.get("rates") or {}).get("SEK")),
+        ]
+        for source_name, url, extractor in providers:
+            try:
+                data = self._raw_get_json(url)
+                raw_rate = extractor(data if isinstance(data, dict) else {})
+                if raw_rate is None:
+                    continue
+                parsed = round(float(raw_rate), 4)
+                if 0.5 < parsed < 100.0:
+                    return parsed, source_name
+            except Exception:
+                continue
+        return None
 
     def fetch_usd_sek(self, default: float = 10.16) -> tuple[float, str]:
         """
         Fetches live USD/SEK exchange rate with a 60s thread-safe TTL cache.
-        Returns `(rate, source)` where `source` is `'yahoo_live'` or `'fallback'`.
+        Cascades Yahoo USDSEK=X -> Frankfurter ECB -> open.er-api -> cached stale -> default.
         """
         now_mono = time.monotonic()
+        stale_rate: Optional[tuple[float, str]] = None
         if self.fx_ttl_sec > 0:
             with self._cache_lock:
                 if self._fx_cache is not None:
                     cached_ts, cached_rate, cached_src = self._fx_cache
+                    stale_rate = (cached_rate, f"{cached_src}_stale")
                     if (now_mono - cached_ts) < self.fx_ttl_sec:
                         return cached_rate, cached_src
 
-        url = "https://query1.finance.yahoo.com/v8/finance/chart/USDSEK=X?interval=1d&range=5d"
-        try:
-            data = self._http_get_json(url)
-            chart = data.get("chart") or {}
-            if chart.get("error"):
-                raise MarketDataError(str(chart["error"]))
-            results = chart.get("result") or []
-            if not results:
-                raise MarketDataError("Empty USDSEK=X chart result")
-            res = results[0]
-            meta = res.get("meta") or {}
-            sym = str(meta.get("symbol", "")).upper()
-            if sym and "SEK" not in sym:
-                raise MarketDataError(f"Unexpected FX symbol in response: {sym}")
+        if not (self.fx_ttl_sec > 0 and self._is_yahoo_cooled_down()):
+            url = "https://query1.finance.yahoo.com/v8/finance/chart/USDSEK=X?interval=1d&range=5d"
+            try:
+                data = self._http_get_json(url)
+                chart = data.get("chart") or {}
+                if chart.get("error"):
+                    raise MarketDataError(str(chart["error"]))
+                results = chart.get("result") or []
+                if not results:
+                    raise MarketDataError("Empty USDSEK=X chart result")
+                res = results[0]
+                meta = res.get("meta") or {}
+                sym = str(meta.get("symbol", "")).upper()
+                if sym and "SEK" not in sym:
+                    raise MarketDataError(f"Unexpected FX symbol in response: {sym}")
 
-            rate = meta.get("regularMarketPrice")
-            if rate is None:
-                closes = ((res.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
-                valid_closes = [float(c) for c in closes if c is not None]
-                rate = valid_closes[-1] if valid_closes else None
+                rate = meta.get("regularMarketPrice")
+                if rate is None:
+                    closes = ((res.get("indicators") or {}).get("quote") or [{}])[0].get("close") or []
+                    valid_closes = [float(c) for c in closes if c is not None]
+                    rate = valid_closes[-1] if valid_closes else None
 
-            if rate is None:
-                raise MarketDataError("Missing USD/SEK price")
-            parsed_rate = round(float(rate), 4)
-            if not (0.5 < parsed_rate < 100.0):
-                raise MarketDataError(f"Out-of-range USD/SEK rate: {parsed_rate}")
+                if rate is None:
+                    raise MarketDataError("Missing USD/SEK price")
+                parsed_rate = round(float(rate), 4)
+                if not (0.5 < parsed_rate < 100.0):
+                    raise MarketDataError(f"Out-of-range USD/SEK rate: {parsed_rate}")
 
-            if self.fx_ttl_sec > 0:
+                if self.fx_ttl_sec > 0:
+                    with self._cache_lock:
+                        YahooFinanceClient._fx_cache = (time.monotonic(), parsed_rate, "yahoo_live")
+                return parsed_rate, "yahoo_live"
+            except Exception:
+                pass
+
+        if self.fx_ttl_sec > 0:
+            fb = self._fetch_usd_sek_fallback_providers()
+            if fb is not None:
+                parsed_rate, src_name = fb
                 with self._cache_lock:
-                    YahooFinanceClient._fx_cache = (time.monotonic(), parsed_rate, "yahoo_live")
-            return parsed_rate, "yahoo_live"
-        except Exception:
-            return float(default), "fallback"
+                    YahooFinanceClient._fx_cache = (time.monotonic(), parsed_rate, src_name)
+                return parsed_rate, src_name
+            if stale_rate is not None:
+                return stale_rate
+
+        return float(default), "fallback"
 
     @staticmethod
     def _resolve_exchange_tz(meta: dict[str, Any], yahoo_sym: str) -> ZoneInfo:
@@ -367,6 +432,84 @@ class YahooFinanceClient:
             ],
         }
 
+    def _fetch_nasdaq_15m_series(
+        self,
+        canonical_ticker: str,
+        asset: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Resamples Nasdaq intraday 1m ticks into 15m OHLC bars + Pine indicators as Yahoo 429 fallback."""
+        ny_tz = ZoneInfo("America/New_York")
+        url = f"https://api.nasdaq.com/api/quote/{canonical_ticker}/chart?assetclass=stocks"
+        raw = self._raw_get_json(url)
+        data = raw.get("data") or {}
+        pts = data.get("chart") or []
+        if not pts:
+            raise MarketDataError(f"Empty Nasdaq chart points for {canonical_ticker}")
+
+        buckets: dict[int, dict[str, Any]] = {}
+        for pt in pts:
+            x_ms = pt.get("x")
+            y_val = pt.get("y")
+            if x_ms is None or y_val is None:
+                continue
+            price = float(y_val)
+            sec = int(int(x_ms) // 1000)
+            b_ts = sec - (sec % 900)
+            b = buckets.get(b_ts)
+            if b is None:
+                dt_utc = datetime.fromtimestamp(b_ts, tz=timezone.utc)
+                dt_ex = dt_utc.astimezone(ny_tz)
+                dt_cet = dt_utc.astimezone(CET)
+                buckets[b_ts] = {
+                    "ts": b_ts,
+                    "time": dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "timestamp_cet": dt_cet.strftime("%Y-%m-%d %H:%M %Z"),
+                    "date": dt_ex.strftime("%Y-%m-%d"),
+                    "hhmm_cet": dt_cet.strftime("%H:%M"),
+                    "open": round(price, 2),
+                    "high": round(price, 2),
+                    "low": round(price, 2),
+                    "close": round(price, 2),
+                    "volume": 0.0,
+                    "ticker": canonical_ticker,
+                }
+            else:
+                b["high"] = round(max(b["high"], price), 2)
+                b["low"] = round(min(b["low"], price), 2)
+                b["close"] = round(price, 2)
+
+        bars = [buckets[k] for k in sorted(buckets.keys())]
+        if not bars:
+            raise MarketDataError(f"No usable Nasdaq chart buckets for {canonical_ticker}")
+
+        prev_str = str(data.get("previousClose") or "").replace("$", "").replace(",", "").strip()
+        try:
+            prev_close = float(prev_str) if prev_str else None
+        except ValueError:
+            prev_close = None
+
+        market_open = self._infer_market_open({}, ny_tz, canonical_ticker)
+        latest_telemetry = self._compute_pine_indicators(
+            bars=bars,
+            chart_prev_close=prev_close,
+            market_open=market_open,
+        )
+        usd_sek, _ = self.fetch_usd_sek(default=10.16)
+        currency = str((asset or {}).get("currency") or "USD")
+        latest_telemetry["usd_sek"] = usd_sek
+        latest_telemetry["source"] = "nasdaq_fallback"
+        return {
+            "ticker": canonical_ticker,
+            "yahoo_symbol": canonical_ticker,
+            "currency": currency,
+            "source": "nasdaq_fallback",
+            "market_open": market_open,
+            "data_timestamp_cet": latest_telemetry["data_timestamp_cet"],
+            "usd_sek": usd_sek,
+            "bars": bars,
+            "latest_telemetry": latest_telemetry,
+        }
+
     def fetch_15m_series(
         self,
         ticker: str,
@@ -376,7 +519,7 @@ class YahooFinanceClient:
     ) -> dict[str, Any]:
         """
         Fetches OHLCV chart data for `ticker` with a shared 45s thread-safe TTL cache,
-        computes Pine v6 indicators, and returns normalized chart bars + `latest_telemetry`.
+        Yahoo 429 cooldown protection, Nasdaq US fallback, and stale-cache fallback.
         """
         canonical_ticker = normalize_ticker(ticker) or str(ticker).strip().upper()
         exchange = str((asset or {}).get("exchange") or "")
@@ -384,59 +527,80 @@ class YahooFinanceClient:
         cache_key = (yahoo_sym, range_str, interval)
 
         now_mono = time.monotonic()
+        stale_payload: Optional[dict[str, Any]] = None
         if self.series_ttl_sec > 0:
             with self._cache_lock:
                 cached = self._series_cache.get(cache_key)
-                if cached is not None and (now_mono - cached[0]) < self.series_ttl_sec:
-                    return copy.deepcopy(cached[1])
+                if cached is not None:
+                    stale_payload = copy.deepcopy(cached[1])
+                    if (now_mono - cached[0]) < self.series_ttl_sec:
+                        return stale_payload
 
-        url = (
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_sym}"
-            f"?interval={interval}&range={range_str}&includePrePost=false"
-        )
-        try:
-            data = self._http_get_json(url)
-            chart = data.get("chart") or {}
-            if chart.get("error"):
-                raise MarketDataError(f"Yahoo Finance error for {yahoo_sym}: {chart['error']}")
-            results = chart.get("result") or []
-            if not results:
-                raise MarketDataError(f"No Yahoo Finance chart data returned for {yahoo_sym}")
-            res = results[0]
-        except MarketDataError:
-            raise
-        except Exception as exc:
-            raise MarketDataError(f"Failed fetching Yahoo Finance data for {yahoo_sym}: {exc}") from exc
+        yahoo_err: Optional[Exception] = None
+        payload: Optional[dict[str, Any]] = None
 
-        meta = res.get("meta") or {}
-        ex_tz = self._resolve_exchange_tz(meta, yahoo_sym)
-        market_open = self._infer_market_open(meta, ex_tz, yahoo_sym)
-        bars = self._parse_bars(res, ex_tz, canonical_ticker)
+        if not (self.series_ttl_sec > 0 and self._is_yahoo_cooled_down()):
+            url = (
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{yahoo_sym}"
+                f"?interval={interval}&range={range_str}&includePrePost=false"
+            )
+            try:
+                data = self._http_get_json(url)
+                chart = data.get("chart") or {}
+                if chart.get("error"):
+                    raise MarketDataError(f"Yahoo Finance error for {yahoo_sym}: {chart['error']}")
+                results = chart.get("result") or []
+                if not results:
+                    raise MarketDataError(f"No Yahoo Finance chart data returned for {yahoo_sym}")
+                res = results[0]
 
-        chart_prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
-        parsed_prev = float(chart_prev_close) if chart_prev_close is not None else None
-        latest_telemetry = self._compute_pine_indicators(
-            bars=bars,
-            chart_prev_close=parsed_prev,
-            market_open=market_open,
-        )
+                meta = res.get("meta") or {}
+                ex_tz = self._resolve_exchange_tz(meta, yahoo_sym)
+                market_open = self._infer_market_open(meta, ex_tz, yahoo_sym)
+                bars = self._parse_bars(res, ex_tz, canonical_ticker)
 
-        usd_sek, _fx_src = self.fetch_usd_sek(default=10.16)
-        currency = str((asset or {}).get("currency") or meta.get("currency") or ("SEK" if yahoo_sym.endswith(".ST") else "USD"))
-        latest_telemetry["usd_sek"] = usd_sek
-        latest_telemetry["source"] = "yahoo_live"
+                chart_prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+                parsed_prev = float(chart_prev_close) if chart_prev_close is not None else None
+                latest_telemetry = self._compute_pine_indicators(
+                    bars=bars,
+                    chart_prev_close=parsed_prev,
+                    market_open=market_open,
+                )
 
-        payload: dict[str, Any] = {
-            "ticker": canonical_ticker,
-            "yahoo_symbol": yahoo_sym,
-            "currency": currency,
-            "source": "yahoo_live",
-            "market_open": market_open,
-            "data_timestamp_cet": latest_telemetry["data_timestamp_cet"],
-            "usd_sek": usd_sek,
-            "bars": bars,
-            "latest_telemetry": latest_telemetry,
-        }
+                usd_sek, _fx_src = self.fetch_usd_sek(default=10.16)
+                currency = str((asset or {}).get("currency") or meta.get("currency") or ("SEK" if yahoo_sym.endswith(".ST") else "USD"))
+                latest_telemetry["usd_sek"] = usd_sek
+                latest_telemetry["source"] = "yahoo_live"
+
+                payload = {
+                    "ticker": canonical_ticker,
+                    "yahoo_symbol": yahoo_sym,
+                    "currency": currency,
+                    "source": "yahoo_live",
+                    "market_open": market_open,
+                    "data_timestamp_cet": latest_telemetry["data_timestamp_cet"],
+                    "usd_sek": usd_sek,
+                    "bars": bars,
+                    "latest_telemetry": latest_telemetry,
+                }
+            except MarketDataError as exc:
+                yahoo_err = exc
+            except Exception as exc:
+                yahoo_err = MarketDataError(f"Failed fetching Yahoo Finance data for {yahoo_sym}: {exc}")
+        else:
+            yahoo_err = MarketDataError(f"Yahoo Finance rate-limit cooldown active for {yahoo_sym}")
+
+        if payload is None and self.series_ttl_sec > 0 and not yahoo_sym.endswith(".ST"):
+            try:
+                payload = self._fetch_nasdaq_15m_series(canonical_ticker, asset=asset)
+            except Exception:
+                pass
+
+        if payload is None:
+            if stale_payload is not None:
+                stale_payload["source"] = f"{stale_payload.get('source', 'cache')}_stale"
+                return stale_payload
+            raise yahoo_err if yahoo_err is not None else MarketDataError(f"Unable to fetch chart data for {yahoo_sym}")
 
         if self.series_ttl_sec > 0:
             with self._cache_lock:

@@ -1049,26 +1049,74 @@ class WebApiRouter:
         watchlist = portfolio.get("watchlist", {})
         asset = watchlist.get(norm_ticker)
 
-        series = _invoke_compatible(
-            self.bridge.market_data.fetch_chart_series,
-            {
-                "ticker": norm_ticker,
-                "asset": asset,
-                "range_str": range_str,
-                "range": range_str,
-                "interval": interval,
-            },
-            mock_kwargs={
-                "ticker": norm_ticker,
-                "asset": asset,
-                "range_str": range_str,
-                "interval": interval,
-            },
-        )
-
         audit_records = self.bridge.repo.get_recent_audit_tail(
             50, ticker=norm_ticker, max_scan_lines=1000
         )
+
+        chart_warning = ""
+        try:
+            series = _invoke_compatible(
+                self.bridge.market_data.fetch_chart_series,
+                {
+                    "ticker": norm_ticker,
+                    "asset": asset,
+                    "range_str": range_str,
+                    "range": range_str,
+                    "interval": interval,
+                },
+                mock_kwargs={
+                    "ticker": norm_ticker,
+                    "asset": asset,
+                    "range_str": range_str,
+                    "interval": interval,
+                },
+            )
+        except MarketDataError as exc:
+            chart_warning = str(exc)
+            fb_bars: list[dict[str, Any]] = []
+            for rec in audit_records:
+                telem = rec.get("telemetry") if isinstance(rec.get("telemetry"), dict) else {}
+                if "close" not in telem:
+                    continue
+                close_v = float(telem["close"])
+                raw_ts = str(telem.get("time") or rec.get("ts") or "")
+                ts_epoch = 0
+                try:
+                    ts_epoch = int(datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).timestamp())
+                except Exception:
+                    pass
+                fb_bars.append({
+                    "ts": ts_epoch,
+                    "time": raw_ts,
+                    "open": float(telem.get("open", close_v)),
+                    "high": float(telem.get("high", close_v)),
+                    "low": float(telem.get("low", close_v)),
+                    "close": close_v,
+                    "volume": float(telem.get("volume", 0.0) or 0.0),
+                    "ema4": telem.get("ema4"),
+                    "ema50": telem.get("ema50"),
+                    "vwap": telem.get("vwap"),
+                    "or_high": telem.get("or_high"),
+                    "or_low": telem.get("or_low"),
+                    "pd_low": telem.get("pd_low"),
+                    "pd_high": telem.get("pd_high"),
+                    "atr14": telem.get("atr14"),
+                    "rsi14": telem.get("rsi14"),
+                    "ticker": norm_ticker,
+                })
+            if not fb_bars:
+                raise
+            usd_sek, _ = self._safe_fetch_usd_sek()
+            series = {
+                "ticker": norm_ticker,
+                "currency": (asset or {}).get("currency", "USD"),
+                "source": "audit_fallback",
+                "warning": chart_warning,
+                "usd_sek": usd_sek,
+                "bars": fb_bars,
+                "latest_telemetry": audit_records[-1].get("telemetry", {}),
+            }
+
         audit_markers: list[dict[str, Any]] = []
         for rec in audit_records:
             telem = rec.get("telemetry") if isinstance(rec.get("telemetry"), dict) else {}

@@ -292,6 +292,17 @@ class TestWebCommandCenter(unittest.TestCase):
         self.assertEqual(st_c, 200)
         self.assertNotIn("TOP_SECRET_SHOULD_NOT_LEAK", json.dumps(body_c))
 
+        # 10. Chart audit-log fallback returns 200 when MarketDataError is raised
+        from traderagent.infrastructure.market_data import MarketDataError
+        self.mock_market.fetch_chart_series.side_effect = MarketDataError("Yahoo 429")
+        try:
+            st_cfb, _, body_cfb = self._req("GET", "/api/chart/NVDA?range=5d&interval=15m")
+            self.assertEqual(st_cfb, 200)
+            self.assertEqual(body_cfb["source"], "audit_fallback")
+            self.assertGreaterEqual(len(body_cfb["bars"]), 1)
+        finally:
+            self.mock_market.fetch_chart_series.side_effect = None
+
     def test_rest_routes_calculator_chat_analyze_traces_declarative_and_429(self):
         # 1. Portfolio & Live Calculator (risk_parity & fixed budget modes)
         st_p, _, p_body = self._req("GET", "/api/portfolio")
