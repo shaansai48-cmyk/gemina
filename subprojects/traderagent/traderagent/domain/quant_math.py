@@ -1,12 +1,14 @@
 """
 Pure Quantitative Pricing, Regime Classification, Fee-Adjusted R:R Math Auditor,
 Bailey & Lopez de Prado Statistical Validation (PSR/DSR/Wilson CI),
-and Step-by-Step Avanza Order Placement Formatter (Domain Service).
+Deterministic Strategy Candidate Builder, and Clean Telegram HTML Formatters.
 """
+import html
 import math
+import re
 from statistics import mean, stdev
-from typing import Any
-from traderagent.domain.models import TradeDecision, TradeDecisionDraft
+from typing import Any, Optional
+from traderagent.domain.models import TradeActionType, TradeDecision, TradeDecisionDraft
 
 
 def compute_quant_metrics(telemetry: dict, asset: dict, usd_sek: float = 10.16) -> dict[str, Any]:
@@ -71,25 +73,73 @@ def compute_verified_fee_adjusted_rr(
 ) -> dict[str, Any]:
     """
     Deterministic Python Math Auditor (Level 3a):
-    Supports both LONG (`BUY_MINI_LONG`, `BUY_SHARES`) and SHORT (`BUY_MINI_SHORT`) setups.
+    Supports both LONG (`BUY_MINI_LONG`, `BUY_SHARES`) and SHORT (`BUY_MINI_SHORT`) setups,
+    while marking exits (`SELL_*`) and underwater `HOLD` states as `rr_applicable=False`.
     Recomputes exact net Risk/Reward after Avanza FX drag (0.50% USD) on shares or
     certificate-equity spread (0.38% of Mini intrinsic equity `|spot - fin_lvl|`) on Mini Futures.
     """
     spot = float(telemetry["close"])
-    is_short = "SHORT" in draft.action or "MINI S" in draft.instrument.upper()
+    action_str = str(draft.action)
+    llm_rr = round(float(draft.net_risk_reward_ratio), 2)
+
+    if action_str.startswith("SELL"):
+        return {
+            "direction": "EXIT",
+            "spot": spot,
+            "stop": float(draft.underlying_stop_price or 0.0),
+            "target": 0.0,
+            "llm_claimed_rr": llm_rr,
+            "python_verified_net_rr": 0.0,
+            "rr_discrepancy": 0.0,
+            "rr_applicable": False,
+            "math_hallucination_detected": False,
+        }
+
+    is_short = "SHORT" in action_str or "MINI S" in draft.instrument.upper()
 
     if is_short:
-        stop = float(draft.underlying_stop_price) if draft.underlying_stop_price > spot else round(spot * 1.02, 2)
-        target = float(draft.take_profit_target) if (0 < draft.take_profit_target < spot) else round(spot * 0.96, 2)
+        draft_stop = float(draft.underlying_stop_price or 0.0)
+        draft_tp = float(draft.take_profit_target or 0.0)
+        stop = draft_stop if draft_stop > spot else round(spot * 1.02, 2)
+        target = draft_tp if (0 < draft_tp < spot) else round(spot * 0.96, 2)
         gross_reward = max(spot - target, 0.0)
         gross_risk = max(stop - spot, 0.01)
     else:
-        stop = float(draft.underlying_stop_price) if (0 < draft.underlying_stop_price < spot) else float(asset.get("hard_stop_price", spot * 0.98))
-        target = float(draft.take_profit_target) if draft.take_profit_target > spot else float(asset.get("take_profit_price", spot * 1.04))
+        draft_stop = float(draft.underlying_stop_price or 0.0)
+        draft_tp = float(draft.take_profit_target or 0.0)
+        if action_str == "HOLD" and draft_stop >= spot:
+            return {
+                "direction": "LONG",
+                "spot": spot,
+                "stop": draft_stop,
+                "target": draft_tp,
+                "llm_claimed_rr": llm_rr,
+                "python_verified_net_rr": 0.0,
+                "rr_discrepancy": 0.0,
+                "rr_applicable": False,
+                "math_hallucination_detected": False,
+            }
+
+        asset_stop = float(asset.get("hard_stop_price") or 0.0)
+        asset_tp = float(asset.get("take_profit_price") or 0.0)
+        if 0 < draft_stop < spot:
+            stop = draft_stop
+        elif 0 < asset_stop < spot:
+            stop = asset_stop
+        else:
+            stop = round(spot * 0.98, 2)
+
+        if draft_tp > spot:
+            target = draft_tp
+        elif asset_tp > spot:
+            target = asset_tp
+        else:
+            target = round(spot * 1.04, 2)
+
         gross_reward = max(target - spot, 0.0)
         gross_risk = max(spot - stop, 0.01)
 
-    if "MINI" in draft.action or "MINI" in draft.instrument.upper():
+    if "MINI" in action_str or "MINI" in draft.instrument.upper():
         spread_pct = float(risk.get("avanza_mini_spread_pct", 0.0038))
         if is_short:
             s_fin = float(asset.get("mini_short_financing_level") or round(spot * 1.22, 2))
@@ -106,7 +156,6 @@ def compute_verified_fee_adjusted_rr(
         net_risk = gross_risk + (fx_drag * 0.5)
 
     verified_rr = round(net_reward / net_risk, 2) if net_risk > 0 else 0.0
-    llm_rr = round(float(draft.net_risk_reward_ratio), 2)
     discrepancy = round(abs(llm_rr - verified_rr), 2)
     return {
         "direction": "SHORT" if is_short else "LONG",
@@ -116,6 +165,7 @@ def compute_verified_fee_adjusted_rr(
         "llm_claimed_rr": llm_rr,
         "python_verified_net_rr": verified_rr,
         "rr_discrepancy": discrepancy,
+        "rr_applicable": True,
         "math_hallucination_detected": discrepancy > 0.35,
     }
 
@@ -226,6 +276,39 @@ def compute_statistical_confidence(
     }
 
 
+def _fmt_price(val: float, currency: str) -> str:
+    """Formats a price cleanly with currency symbol."""
+    return f"${val:.2f}" if currency == "USD" else f"{val:.2f} SEK"
+
+
+def _sanitize_plain_text(raw: str) -> str:
+    """Strips LaTeX macros, Markdown emphasis/backticks, and internal pipeline tokens before HTML escaping."""
+    text = str(raw or "").strip()
+    text = text.replace("$\\rightarrow$", "->").replace("\\rightarrow", "->")
+    text = re.sub(r"\$\\[a-zA-Z]+\$", "->", text)
+    text = text.replace("**", "").replace("`", "")
+    # Scrub internal pipeline tokens that should never appear in user-facing alerts
+    for token in (
+        "REVISED_BY_CRITIC",
+        "VETOED_BY_CRITIC",
+        "VETOED_BY_GUARDRAIL",
+        "MinTRL",
+        "CSCV",
+        "PBO",
+        "DSR",
+        "PSR",
+        "L3a",
+        "L3b",
+        "L1",
+        "L2",
+        "L4",
+        "ER",
+    ):
+        text = re.sub(rf"\b{re.escape(token)}\b", "", text)
+    text = re.sub(r"\s{2,}", " ", text).strip()
+    return html.escape(text)
+
+
 def format_avanza_order_instructions(
     decision: TradeDecision,
     telemetry: dict,
@@ -235,84 +318,736 @@ def format_avanza_order_instructions(
     account_id: str = "ISK 5872428",
 ) -> str:
     """
-    Generates a step-by-step Avanza order placement & hardware Stop-Loss guide whenever
-    an active trade action (`BUY_*` or `SELL_*`) is recommended.
+    Generates a step-by-step Avanza order placement & hardware Stop-Loss guide in clean Telegram HTML
+    whenever an active trade action (`BUY_*` or `SELL_*`) is recommended.
     """
     if decision.action == "HOLD" or decision.quantity <= 0:
         return ""
 
     spot = float(telemetry["close"])
-    cur = asset.get("currency", "USD")
+    cur = str(asset.get("currency", "USD"))
     fx = float(metrics.get("fx_multiplier", 10.16 if cur == "USD" else 1.0))
     parity = float(asset.get("mini_parity", 10.0)) or 10.0
+    esc_acct = html.escape(str(account_id))
+    esc_ticker = html.escape(str(decision.ticker))
+    esc_inst = html.escape(str(decision.instrument))
+    esc_cur = html.escape(cur)
 
     if decision.action in ("BUY_MINI_LONG", "BUY_MINI_SHORT"):
         is_short = decision.action == "BUY_MINI_SHORT"
-        fin_lvl = float(metrics["mini_short_financing_level"]) if is_short else float(asset["mini_financing_level"])
-        entry_sek = float(decision.limit_price or (metrics["mini_short_theoretical_sek"] if is_short else metrics["mini_theoretical_sek"]))
+        fin_lvl = float(metrics.get("mini_short_financing_level", 0.0)) if is_short else float(asset.get("mini_financing_level", 0.0))
+        fallback_sek = metrics.get("mini_short_theoretical_sek", 0.0) if is_short else metrics.get("mini_theoretical_sek", 0.0)
+        entry_sek = float(decision.limit_price or fallback_sek)
         trig_sek = float(decision.avanza_stop_trigger_sek or 0.0)
-        sell_sek = float(decision.avanza_stop_sell_sek or 0.0)
+        sell_sek = float(decision.avanza_stop_sell_sek or max(round(trig_sek - 0.20, 2), 0.0))
         tp_u = float(decision.take_profit_target)
         stop_u = float(decision.underlying_stop_price)
 
         if is_short:
-            tp_sek = round(((fin_lvl - tp_u) * fx) / parity, 2)
+            tp_sek = round(((fin_lvl - tp_u) * fx) / parity, 2) if fin_lvl > tp_u else round(entry_sek * 1.2, 2)
             risk_1r_u = max(stop_u - spot, 0.01)
             be_reach_u = round(spot - float(risk.get("breakeven_ratchet_r_mult", 0.85)) * risk_1r_u, 2)
             be_lock_u = round(spot - float(risk.get("breakeven_lock_r_mult", 0.15)) * risk_1r_u, 2)
-            be_trig_sek = round(((fin_lvl - be_lock_u) * fx) / parity, 2)
+            be_trig_sek = round(((fin_lvl - be_lock_u) * fx) / parity, 2) if fin_lvl > be_lock_u else entry_sek
         else:
-            tp_sek = round(((tp_u - fin_lvl) * fx) / parity, 2)
+            tp_sek = round(((tp_u - fin_lvl) * fx) / parity, 2) if fin_lvl > 0 else round(entry_sek * 1.2, 2)
             risk_1r_u = max(spot - stop_u, 0.01)
             be_reach_u = round(spot + float(risk.get("breakeven_ratchet_r_mult", 0.85)) * risk_1r_u, 2)
             be_lock_u = round(spot + float(risk.get("breakeven_lock_r_mult", 0.15)) * risk_1r_u, 2)
-            be_trig_sek = round(((be_lock_u - fin_lvl) * fx) / parity, 2)
+            be_trig_sek = round(((be_lock_u - fin_lvl) * fx) / parity, 2) if fin_lvl > 0 else entry_sek
 
         notional_sek = round(decision.quantity * entry_sek, 0)
         total_risk_sek = round(decision.quantity * max(entry_sek - sell_sek, 0.20), 0)
-        courtage_note = "0 SEK courtage (>= 1,000 SEK)" if notional_sek >= 1000 else "Note: < 1,000 SEK incurs courtage"
+        courtage_note = "0 SEK courtage (&gt;= 1,000 SEK)" if notional_sek >= 1000 else "Note: &lt; 1,000 SEK incurs courtage"
         side_tag = "SHORT" if is_short else "LONG"
 
         return (
-            f"🏦 *HOW TO PLACE THIS ORDER IN AVANZA ({account_id}):*\n"
-            f"*1. Place Entry Order (Köp):*\n"
-            f"   • Search Instrument: `{decision.instrument}`\n"
-            f"   • Action: *Köp* (Limit Order — never use market order on ETPs)\n"
-            f"   • Antal (Quantity): `{decision.quantity} st` (Total: `~{int(notional_sek)} SEK` | {courtage_note})\n"
-            f"   • Kurs (Limit Price): `{entry_sek:.2f} SEK` (1R Max Risk: `~{int(total_risk_sek)} SEK`)\n"
-            f"*2. Immediately Attach Avanza Hardware Stop-Loss:*\n"
-            f"   • Open position $\\rightarrow$ tap *Stop-Loss*:\n"
-            f"   • *Triggerkurs:* `<= {trig_sek:.2f} SEK` (Underlying `{decision.ticker}` @ `{stop_u}` {cur})\n"
-            f"   • *Säljkurs:* `{sell_sek:.2f} SEK` (`0.20 SEK` below trigger so fast drops fill against Market Maker bid)\n"
-            f"   • *Antal:* `{decision.quantity} st` | *Giltighetstid:* `8 dagar`\n"
-            f"*3. Profit Management & Telegram Sync:*\n"
-            f"   • *Breakeven Ratchet (+0.85R):* When `{decision.ticker}` reaches `{be_reach_u}` {cur}, raise Avanza Stop `Triggerkurs` to `{be_trig_sek:.2f} SEK` (`+0.15R` profit lock).\n"
-            f"   • *Take-Profit / Runner Trail:* Target `~{tp_sek:.2f} SEK` (`{tp_u}` {cur}) or trail with VWAP until `20:25 CET`.\n"
-            f"   • *Sync Ledger:* Send `/fill_mini {decision.quantity} {entry_sek:.2f} {side_tag}` in this chat once filled."
+            f"<b>HOW TO PLACE THIS ORDER IN AVANZA ({esc_acct}):</b>\n"
+            f"<b>1. Entry Order (Köp):</b>\n"
+            f"• Search Instrument: <code>{esc_inst}</code>\n"
+            f"• Action: <b>Köp</b> (Limit Order — never market order on ETPs)\n"
+            f"• <b>Antal:</b> <code>{decision.quantity} st</code> (Total: ~{int(notional_sek):,} SEK | {courtage_note})\n"
+            f"• <b>Kurs (Limit):</b> <code>{entry_sek:.2f} SEK</code> (1R Max Risk: ~{int(total_risk_sek):,} SEK)\n"
+            f"<b>2. Immediately Attach Hardware Stop-Loss:</b>\n"
+            f"• Open position -&gt; tap <b>Stop-Loss</b>:\n"
+            f"• <b>Triggerkurs:</b> <code>&lt;= {trig_sek:.2f} SEK</code> ({esc_ticker} @ {stop_u:.2f} {esc_cur})\n"
+            f"• <b>Säljkurs:</b> <code>{sell_sek:.2f} SEK</code> (0.20 SEK below trigger for Market Maker fill)\n"
+            f"• <b>Antal:</b> <code>{decision.quantity} st</code> | <b>Giltighetstid:</b> 8 dagar\n"
+            f"<b>3. Profit Management &amp; Sync:</b>\n"
+            f"• <b>Breakeven Ratchet (+0.85R):</b> At {be_reach_u:.2f} {esc_cur}, raise Stop Triggerkurs to <code>{be_trig_sek:.2f} SEK</code> (+0.15R profit lock)\n"
+            f"• <b>Take-Profit / Trail:</b> Target ~{tp_sek:.2f} SEK ({tp_u:.2f} {esc_cur}) or trail with intraday average until 20:25 CET\n"
+            f"• <b>Sync Ledger:</b> <code>/fill_mini {esc_ticker} {decision.quantity} {entry_sek:.2f} {side_tag}</code>"
         )
 
     if decision.action in ("SELL_MINI_LONG", "SELL_MINI_SHORT"):
         is_short_exit = decision.action == "SELL_MINI_SHORT" or "MINI S" in decision.instrument.upper()
-        fallback_px = metrics["mini_short_theoretical_sek"] if is_short_exit else metrics["mini_theoretical_sek"]
+        fallback_px = metrics.get("mini_short_theoretical_sek", 0.0) if is_short_exit else metrics.get("mini_theoretical_sek", 0.0)
         exit_sek = float(decision.limit_price or fallback_px)
         return (
-            f"🏦 *HOW TO EXIT THIS MINI IN AVANZA ({account_id}):*\n"
-            f"   • Open `{decision.instrument}` $\\rightarrow$ cancel any open Stop-Loss order first.\n"
-            f"   • Tap *Sälj* $\\rightarrow$ *Antal:* `{decision.quantity} st` $\\rightarrow$ *Kurs:* `{exit_sek:.2f} SEK` (match Market Maker Köpkurs/bid).\n"
-            f"   • Send `/close_mini {exit_sek:.2f}` in this chat once sold."
+            f"<b>HOW TO EXIT THIS MINI IN AVANZA ({esc_acct}):</b>\n"
+            f"• Open <code>{esc_inst}</code> -&gt; cancel any open Stop-Loss order first.\n"
+            f"• Tap <b>Sälj</b> -&gt; <b>Antal:</b> <code>{decision.quantity} st</code> -&gt; <b>Kurs (Limit):</b> <code>{exit_sek:.2f} SEK</code> (match Market Maker bid).\n"
+            f"• <b>Sync Ledger:</b> <code>/close_mini {esc_ticker} {exit_sek:.2f}</code>"
         )
 
-    if decision.action in ("BUY_SHARES", "SELL_SHARES"):
-        side_sv = "Köp" if decision.action == "BUY_SHARES" else "Sälj"
+    if decision.action == "SELL_SHARES":
         px = float(decision.limit_price or spot)
         fx_note = "Includes 0.25% Avanza FX conversion fee" if cur == "USD" else "0% FX fee (SEK)"
-        sync_cmd = f"/fill_shares {decision.quantity} {px:.2f}" if decision.action == "BUY_SHARES" else f"/close_shares {px:.2f}"
         return (
-            f"🏦 *HOW TO PLACE THIS SHARE ORDER IN AVANZA ({account_id}):*\n"
-            f"   • Search `{decision.ticker}` $\\rightarrow$ tap *{side_sv}*.\n"
-            f"   • *Antal:* `{decision.quantity} st` | *Kurs (Limit):* `{px:.2f} {cur}` ({fx_note}).\n"
-            f"   • *Hard Stop-Loss:* `{decision.underlying_stop_price} {cur}` | *Target:* `{decision.take_profit_target} {cur}`.\n"
-            f"   • *Sync Ledger:* Send `{sync_cmd}` in this chat once filled."
+            f"<b>HOW TO EXIT SHARES IN AVANZA ({esc_acct}):</b>\n"
+            f"• Search <code>{esc_ticker}</code> -&gt; tap <b>Sälj</b>.\n"
+            f"• <b>Antal:</b> <code>{decision.quantity} st</code> | <b>Kurs (Limit):</b> <code>{px:.2f} {esc_cur}</code> ({fx_note}).\n"
+            f"• <b>Sync Ledger:</b> <code>/close_shares {esc_ticker} {px:.2f}</code>"
+        )
+
+    if decision.action == "BUY_SHARES":
+        px = float(decision.limit_price or spot)
+        fx_note = "Includes 0.25% Avanza FX conversion fee" if cur == "USD" else "0% FX fee (SEK)"
+        return (
+            f"<b>HOW TO PLACE THIS SHARE ORDER IN AVANZA ({esc_acct}):</b>\n"
+            f"• Search <code>{esc_ticker}</code> -&gt; tap <b>Köp</b>.\n"
+            f"• <b>Antal:</b> <code>{decision.quantity} st</code> | <b>Kurs (Limit):</b> <code>{px:.2f} {esc_cur}</code> ({fx_note}).\n"
+            f"• <b>Hard Stop-Loss:</b> <code>{decision.underlying_stop_price:.2f} {esc_cur}</code> | <b>Target:</b> <code>{decision.take_profit_target:.2f} {esc_cur}</code>.\n"
+            f"• <b>Sync Ledger:</b> <code>/fill_shares {esc_ticker} {decision.quantity} {px:.2f}</code>"
         )
 
     return ""
+
+
+def _translate_veto_reason(rationale: str, risk: dict) -> Optional[str]:
+    """Maps internal guardrail veto/exit markers into plain-English explanations."""
+    if "[EMA4 FAILURE EXIT]" in rationale:
+        if "broke above" in rationale:
+            return "Price broke above both short-term trend and the intraday average, triggering an automatic exit on your Short Mini."
+        return "Price broke below both short-term trend and the intraday average, triggering an automatic protective exit."
+    veto_map = {
+        "DAILY QUOTA": "Today's maximum trade count is reached, so standing aside prevents overtrading.",
+        "LOSS LOCKOUT": "Today's daily loss limit was hit, pausing any new risk entries until tomorrow.",
+        "COOLDOWN": "A recent stop-out cooldown is still active to prevent rushing back into the market.",
+        "MAX CONCURRENT MINIS": "You already hold an open leveraged Mini, keeping exposure limited to one Mini at a time.",
+        "OPENING BELL GATE": "Standing aside during the noisy 15:30-15:45 CET opening bell volatility window.",
+        "ETP CUTOFF": "Nordic exchange-traded product trading cutoff (20:30 CET) has passed for new leveraged entries.",
+        "SUB-VWAP": "Price remains below the intraday average without a confirmed bounce off yesterday's low.",
+        "ABOVE-VWAP SHORT": "Price remains above the intraday average without a confirmed rejection at yesterday's high.",
+        "LOW ER CHOP": "Recent multi-day price action is choppy and range-bound, making momentum breakouts unreliable.",
+        "LOW RVOL": "Trading volume is lighter than normal, lacking strong buyer or seller conviction.",
+        "LOW R:R": f"Potential reward versus risk falls short of the minimum {risk.get('min_net_rr_ratio', 1.8)}:1 hurdle after fees.",
+    }
+    for key, msg in veto_map.items():
+        if f"[VETO: {key}" in rationale:
+            return msg
+    return None
+
+
+def build_plain_english_reasons(
+    decision: TradeDecision,
+    telemetry: dict,
+    asset: dict,
+    metrics: dict,
+    risk: dict,
+) -> list[str]:
+    """
+    Produces 2-3 concise, jargon-free plain-English bullet reasons explaining the trade verdict
+    using price structure, volume/trend quality, and position/stop state.
+    """
+    cur = str(asset.get("currency", "USD"))
+    spot = float(telemetry.get("close", 0.0))
+    vwap = float(telemetry.get("vwap", spot))
+    ema4 = float(telemetry.get("ema4", spot))
+    rvol = float(telemetry.get("rvol", metrics.get("rvol", 1.0)))
+    er = float(telemetry.get("efficiency_ratio", metrics.get("efficiency_ratio_5d", 0.30)))
+    min_er = float(risk.get("min_trend_efficiency_ratio", 0.28))
+    min_rvol = float(risk.get("min_rvol_for_breakout", 1.05))
+
+    reasons: list[str] = []
+
+    # 1. Price location relative to intraday average & short-term trend
+    if spot > vwap and spot > ema4:
+        reasons.append(
+            f"Price ({_fmt_price(spot, cur)}) is holding above the intraday average ({_fmt_price(vwap, cur)}) "
+            f"and short-term trend ({_fmt_price(ema4, cur)}), showing steady buyer control."
+        )
+    elif spot < vwap and spot < ema4:
+        reasons.append(
+            f"Price ({_fmt_price(spot, cur)}) is trading below both the intraday average ({_fmt_price(vwap, cur)}) "
+            f"and short-term trend ({_fmt_price(ema4, cur)}), keeping sellers in control."
+        )
+    else:
+        reasons.append(
+            f"Price ({_fmt_price(spot, cur)}) is caught between short-term trend ({_fmt_price(ema4, cur)}) "
+            f"and the intraday average ({_fmt_price(vwap, cur)}), showing mixed two-way movement."
+        )
+
+    # 2. Market session, volume, or multi-day trend clarity
+    market_open = decision.market_open if decision.market_open is not None else telemetry.get("market_open")
+    if market_open is False:
+        reasons.append(
+            "The exchange is currently closed, so this check uses the latest completed session rather than live order flow."
+        )
+    elif er < min_er:
+        reasons.append(
+            "Multi-day price action has been choppy and range-bound, which favors waiting over chasing breakouts."
+        )
+    elif rvol >= min_rvol:
+        reasons.append(
+            f"Trading volume is active ({rvol:.2f}x normal) alongside a clean multi-day directional trend."
+        )
+    else:
+        reasons.append(
+            f"Trading volume is relatively quiet ({rvol:.2f}x normal), lacking strong confirmation for a breakout."
+        )
+
+    # 3. Specific action, stop, ratchet, or veto reason
+    veto_plain = _translate_veto_reason(decision.rationale or "", risk)
+    held_shares = int(asset.get("regular_shares_held", 0))
+    held_minis = int(asset.get("mini_units_held", 0))
+
+    if decision.ratchet_triggered:
+        reasons.append(
+            f"Your open Mini hit +0.85R profit, locking in a raised protective stop at "
+            f"{_fmt_price(decision.underlying_stop_price, cur)}."
+        )
+    elif veto_plain:
+        reasons.append(veto_plain)
+    elif decision.action == "SELL_SHARES":
+        stop_px = float(asset.get("hard_stop_price") or decision.underlying_stop_price or spot)
+        reasons.append(
+            f"Price reached or fell below your protective stop ({_fmt_price(stop_px, cur)}), so exiting protects remaining capital."
+        )
+    elif decision.action.startswith("BUY"):
+        max_risk_sek = int(float(risk.get("max_risk_per_trade_sek", 450.0)))
+        rr_txt = (
+            f" with {decision.net_risk_reward_ratio:.2f}:1 net reward-to-risk after fees"
+            if (decision.rr_applicable and decision.net_risk_reward_ratio > 0)
+            else ""
+        )
+        reasons.append(
+            f"Position risk is capped around {max_risk_sek} SEK with a protective stop at "
+            f"{_fmt_price(decision.underlying_stop_price, cur)}{rr_txt}."
+        )
+    elif held_minis > 0:
+        reasons.append(
+            f"Your open Mini ({held_minis} units) stays above exit levels with protection at "
+            f"{_fmt_price(decision.underlying_stop_price, cur)}."
+        )
+    elif held_shares > 0:
+        hard_stop = float(asset.get("hard_stop_price") or decision.underlying_stop_price or 0.0)
+        avg_px = float(asset.get("blended_avg_price") or 0.0)
+        stop_clause = f" above your protective stop ({_fmt_price(hard_stop, cur)})" if hard_stop > 0 else ""
+        reasons.append(
+            f"You hold {held_shares} shares (avg {_fmt_price(avg_px, cur)}){stop_clause}; no urgent move is needed."
+        )
+    else:
+        reasons.append("Waiting for a clearer directional breakout or sweep reclaim with stronger volume before risking capital.")
+
+    return reasons[:3]
+
+
+def _build_mini_entry_candidate(
+    side: str,
+    ticker: str,
+    telemetry: dict,
+    asset: dict,
+    risk: dict,
+    metrics: dict,
+    avail_cash_sek: float,
+    regime: str,
+    setup_note: str,
+) -> Optional[TradeDecision]:
+    """Builds and R:R-verifies a deterministic Mini Long or Mini Short candidate."""
+    spot = float(telemetry["close"])
+    low = float(telemetry.get("low", spot))
+    high = float(telemetry.get("high", spot))
+    pd_low = float(telemetry.get("pd_low", low))
+    pd_high = float(telemetry.get("pd_high", high))
+    vwap = float(telemetry.get("vwap", spot))
+    atr14 = max(float(telemetry.get("atr14", spot * 0.01)), 0.01)
+    cur = str(asset.get("currency", "USD"))
+    fx = float(metrics.get("fx_multiplier", 10.16 if cur == "USD" else 1.0))
+    parity = float(asset.get("mini_parity") or 10.0)
+    stop_buf = float(risk.get("stop_buffer_below_pd_low_atr_mult", 0.20))
+    max_risk_sek = float(risk.get("max_risk_per_trade_sek", 450.0))
+    min_rr = float(risk.get("min_net_rr_ratio", 1.8))
+
+    if side == "LONG":
+        fin_lvl = float(asset.get("mini_financing_level") or 0.0)
+        if fin_lvl <= 0 or spot <= fin_lvl:
+            return None
+        anchor = pd_low if (0 <= (spot - pd_low) <= 2.5 * atr14) else min(vwap, low)
+        stop_u = round(min(anchor, low) - (stop_buf * atr14), 2)
+        if stop_u >= spot:
+            stop_u = round(spot - 1.2 * atr14, 2)
+        risk_u = max(spot - stop_u, 0.05)
+        target_u = round(spot + 2.2 * risk_u, 2)
+        entry_sek = round(((spot - fin_lvl) * fx) / parity, 2)
+        trig_sek = round(((stop_u - fin_lvl) * fx) / parity, 2)
+        action: TradeActionType = "BUY_MINI_LONG"
+        instrument = str(asset.get("mini_instrument") or f"MINI L {ticker} AVA")
+    else:
+        fin_lvl = float(metrics.get("mini_short_financing_level") or asset.get("mini_short_financing_level") or 0.0)
+        if fin_lvl <= spot:
+            return None
+        anchor = pd_high if (0 <= (pd_high - spot) <= 2.5 * atr14) else max(vwap, high)
+        stop_u = round(max(anchor, high) + (stop_buf * atr14), 2)
+        if stop_u <= spot:
+            stop_u = round(spot + 1.2 * atr14, 2)
+        risk_u = max(stop_u - spot, 0.05)
+        target_u = round(max(spot - 2.2 * risk_u, 0.01), 2)
+        entry_sek = round(((fin_lvl - spot) * fx) / parity, 2)
+        trig_sek = round(((fin_lvl - stop_u) * fx) / parity, 2)
+        action = "BUY_MINI_SHORT"
+        instrument = str(asset.get("mini_short_instrument") or f"MINI S {ticker} AVA")
+
+    sell_sek = round(trig_sek - 0.20, 2)
+    if entry_sek <= 0.5 or trig_sek <= 0.30:
+        return None
+
+    per_unit_risk = max(entry_sek - sell_sek, 0.25)
+    qty = min(
+        max(1, int(max_risk_sek / per_unit_risk)),
+        max(1, int((avail_cash_sek * 0.95) / max(entry_sek, 1.0))),
+    )
+    draft = TradeDecisionDraft(
+        ticker=ticker,
+        market_regime=regime,  # type: ignore[arg-type]
+        action=action,
+        instrument=instrument,
+        quantity=qty,
+        limit_price=entry_sek,
+        avanza_stop_trigger_sek=trig_sek,
+        avanza_stop_sell_sek=sell_sek,
+        underlying_stop_price=stop_u,
+        take_profit_target=target_u,
+        net_risk_reward_ratio=2.2,
+        overnight_gap_warning=False,
+        rationale=setup_note,
+    )
+    audit = compute_verified_fee_adjusted_rr(draft, telemetry, asset, risk)
+    verified_rr = float(audit["python_verified_net_rr"])
+    if verified_rr < min_rr:
+        return None
+
+    return TradeDecision(
+        ticker=ticker,
+        market_regime=regime,  # type: ignore[arg-type]
+        action=action,
+        instrument=instrument,
+        quantity=qty,
+        limit_price=entry_sek,
+        avanza_stop_trigger_sek=trig_sek,
+        avanza_stop_sell_sek=sell_sek,
+        underlying_stop_price=stop_u,
+        take_profit_target=target_u,
+        net_risk_reward_ratio=verified_rr,
+        overnight_gap_warning=False,
+        rationale=setup_note,
+        confidence_score=78,
+        critic_verdict="APPROVED",
+        critic_notes="Deterministic Python setup and fee-adjusted R:R verified.",
+        rr_applicable=True,
+        data_timestamp_cet=str(telemetry.get("data_timestamp_cet", "")),
+        market_open=telemetry.get("market_open"),
+    )
+
+
+def build_deterministic_candidate(
+    telemetry: dict,
+    portfolio: dict,
+    asset: dict,
+    risk: dict,
+    metrics: dict,
+) -> TradeDecision:
+    """
+    Builds a fully deterministic Python TradeDecision candidate (verdict, stop, target,
+    and risk-parity sizing) for live `/analyze` without relying on LLM numeric guesswork.
+    """
+    ticker = str(telemetry.get("ticker", "NVDA"))
+    spot = float(telemetry["close"])
+    low = float(telemetry.get("low", spot))
+    high = float(telemetry.get("high", spot))
+    ema4 = float(telemetry.get("ema4", spot))
+    ema50 = float(telemetry.get("ema50", spot))
+    vwap = float(telemetry.get("vwap", spot))
+    or_high = float(telemetry.get("or_high", high))
+    or_low = float(telemetry.get("or_low", low))
+    pd_low = float(telemetry.get("pd_low", low))
+    pd_high = float(telemetry.get("pd_high", high))
+    atr14 = max(float(telemetry.get("atr14", spot * 0.01)), 0.01)
+    rvol = float(telemetry.get("rvol", metrics.get("rvol", 1.0)))
+    er = float(telemetry.get("efficiency_ratio", metrics.get("efficiency_ratio_5d", 0.30)))
+
+    min_er = float(risk.get("min_trend_efficiency_ratio", 0.28))
+    min_rvol = float(risk.get("min_rvol_for_breakout", 1.05))
+    sweep_mult = float(risk.get("pd_low_sweep_exception_atr_mult", 0.35))
+    ema4_mult = float(risk.get("ema4_failure_exit_atr_mult", 0.15))
+    stop_buf = float(risk.get("stop_buffer_below_pd_low_atr_mult", 0.20))
+
+    cur = str(asset.get("currency", "USD"))
+    fx = float(metrics.get("fx_multiplier", 10.16 if cur == "USD" else 1.0))
+    parity = float(asset.get("mini_parity") or 10.0)
+    fin_long = float(asset.get("mini_financing_level") or 0.0)
+    fin_short = float(metrics.get("mini_short_financing_level") or asset.get("mini_short_financing_level") or round(spot * 1.22, 2))
+    hard_stop = float(asset.get("hard_stop_price") or 0.0)
+    asset_tp = float(asset.get("take_profit_price") or 0.0)
+    held_shares = int(asset.get("regular_shares_held", 0))
+    held_minis = int(asset.get("mini_units_held", 0))
+    is_held_short = held_minis > 0 and (
+        str(asset.get("mini_side", "")).upper() == "SHORT"
+        or "MINI S" in str(asset.get("mini_instrument", "")).upper()
+    )
+    avail_cash_sek = float(portfolio.get("cash_reserves", {}).get("available_tactical_mini_sek", 14548.0))
+    market_open = telemetry.get("market_open")
+    data_ts_cet = str(telemetry.get("data_timestamp_cet", ""))
+
+    is_pd_low_sweep = (pd_low - atr14 <= low <= pd_low + sweep_mult * atr14) and (spot > ema4)
+    is_pd_high_sweep = (pd_high - sweep_mult * atr14 <= high <= pd_high + atr14) and (spot < ema4)
+
+    if er >= min_er:
+        if spot > vwap and spot > ema4:
+            regime = "Momentum_Breakout"
+        elif spot < vwap and spot < ema4:
+            regime = "Downtrend_Continuation"
+        else:
+            regime = "Volatile_Chop"
+    elif is_pd_low_sweep or is_pd_high_sweep:
+        regime = "Reversal_Base_Building"
+    elif spot < vwap and spot < ema4 and spot < ema50:
+        regime = "Downtrend_Continuation"
+    else:
+        regime = "Volatile_Chop"
+
+    account_id = str(portfolio.get("account_id", "ISK 5872428"))
+    decision: Optional[TradeDecision] = None
+
+    # 1. Active Mini position exit check (symmetric EMA4 + VWAP failure)
+    if held_minis > 0:
+        if not is_held_short and spot < (ema4 - ema4_mult * atr14) and spot < vwap:
+            inst = str(asset.get("mini_instrument") or f"MINI L {ticker} AVA")
+            exit_sek = float(metrics.get("mini_theoretical_sek") or 0.0)
+            decision = TradeDecision(
+                ticker=ticker,
+                market_regime=regime,  # type: ignore[arg-type]
+                action="SELL_MINI_LONG",
+                instrument=inst,
+                quantity=held_minis,
+                limit_price=exit_sek,
+                avanza_stop_trigger_sek=None,
+                avanza_stop_sell_sek=None,
+                underlying_stop_price=round(spot, 2),
+                take_profit_target=0.0,
+                net_risk_reward_ratio=0.0,
+                overnight_gap_warning=False,
+                rationale=f"[EMA4 FAILURE EXIT] 15m close ({spot:.2f}) broke below both EMA4 ({ema4:.2f}) and VWAP ({vwap:.2f}).",
+                confidence_score=85,
+                critic_verdict="APPROVED",
+                rr_applicable=False,
+                data_timestamp_cet=data_ts_cet,
+                market_open=market_open,
+            )
+        elif is_held_short and spot > (ema4 + ema4_mult * atr14) and spot > vwap:
+            inst = str(asset.get("mini_short_instrument") or f"MINI S {ticker} AVA")
+            exit_sek = float(metrics.get("mini_short_theoretical_sek") or 0.0)
+            decision = TradeDecision(
+                ticker=ticker,
+                market_regime=regime,  # type: ignore[arg-type]
+                action="SELL_MINI_SHORT",
+                instrument=inst,
+                quantity=held_minis,
+                limit_price=exit_sek,
+                avanza_stop_trigger_sek=None,
+                avanza_stop_sell_sek=None,
+                underlying_stop_price=round(spot, 2),
+                take_profit_target=0.0,
+                net_risk_reward_ratio=0.0,
+                overnight_gap_warning=False,
+                rationale=f"[EMA4 FAILURE EXIT] 15m close ({spot:.2f}) broke above both EMA4 ({ema4:.2f}) and VWAP ({vwap:.2f}).",
+                confidence_score=85,
+                critic_verdict="APPROVED",
+                rr_applicable=False,
+                data_timestamp_cet=data_ts_cet,
+                market_open=market_open,
+            )
+
+    # 2. Held regular shares hard-stop breach check
+    if decision is None and held_shares > 0 and held_minis == 0 and hard_stop > 0 and spot <= hard_stop:
+        decision = TradeDecision(
+            ticker=ticker,
+            market_regime=regime,  # type: ignore[arg-type]
+            action="SELL_SHARES",
+            instrument=ticker,
+            quantity=held_shares,
+            limit_price=round(spot, 2),
+            avanza_stop_trigger_sek=None,
+            avanza_stop_sell_sek=None,
+            underlying_stop_price=hard_stop,
+            take_profit_target=0.0,
+            net_risk_reward_ratio=0.0,
+            overnight_gap_warning=False,
+            rationale=f"Spot ({spot:.2f}) reached or breached configured hard stop ({hard_stop:.2f}).",
+            confidence_score=90,
+            critic_verdict="APPROVED",
+            rr_applicable=False,
+            data_timestamp_cet=data_ts_cet,
+            market_open=market_open,
+        )
+
+    # 3. New leveraged Mini entry setup (only when flat on Minis and exchange is not explicitly closed)
+    if decision is None and held_minis == 0 and market_open is not False:
+        long_breakout = (er >= min_er and rvol >= min_rvol and spot > vwap and spot > ema4 and (spot > or_high or spot > ema50))
+        short_breakout = (er >= min_er and rvol >= min_rvol and spot < vwap and spot < ema4 and (spot < or_low or spot < ema50))
+
+        if long_breakout or is_pd_low_sweep:
+            setup_note = (
+                f"Bullish {'sweep reclaim' if is_pd_low_sweep and not long_breakout else 'trend continuation'} "
+                f"above EMA4 ({ema4:.2f})"
+            )
+            decision = _build_mini_entry_candidate(
+                side="LONG",
+                ticker=ticker,
+                telemetry=telemetry,
+                asset=asset,
+                risk=risk,
+                metrics=metrics,
+                avail_cash_sek=avail_cash_sek,
+                regime="Reversal_Base_Building" if (is_pd_low_sweep and not long_breakout) else "Momentum_Breakout",
+                setup_note=setup_note,
+            )
+        elif short_breakout or is_pd_high_sweep:
+            setup_note = (
+                f"Bearish {'sweep rejection' if is_pd_high_sweep and not short_breakout else 'downtrend continuation'} "
+                f"below EMA4 ({ema4:.2f})"
+            )
+            decision = _build_mini_entry_candidate(
+                side="SHORT",
+                ticker=ticker,
+                telemetry=telemetry,
+                asset=asset,
+                risk=risk,
+                metrics=metrics,
+                avail_cash_sek=avail_cash_sek,
+                regime="Reversal_Base_Building" if (is_pd_high_sweep and not short_breakout) else "Downtrend_Continuation",
+                setup_note=setup_note,
+            )
+
+    # 4. Deterministic HOLD fallback
+    if decision is None:
+        if held_minis > 0:
+            inst = str((asset.get("mini_short_instrument") if is_held_short else asset.get("mini_instrument")) or ticker)
+            if is_held_short:
+                anchor = pd_high if (0 <= (pd_high - spot) <= 2.5 * atr14) else max(vwap, high)
+                stop_u = round(max(anchor, high) + stop_buf * atr14, 2)
+                target_u = round(max(spot - 2.5 * atr14, 0.01), 2)
+                trig_sek = round(((fin_short - stop_u) * fx) / parity, 2) if fin_short > stop_u else None
+            else:
+                anchor = pd_low if (0 <= (spot - pd_low) <= 2.5 * atr14) else min(vwap, low)
+                stop_u = round(min(anchor, low) - stop_buf * atr14, 2)
+                target_u = asset_tp if asset_tp > spot else round(spot + 2.5 * atr14, 2)
+                trig_sek = round(((stop_u - fin_long) * fx) / parity, 2) if fin_long > 0 and stop_u > fin_long else None
+            sell_sek = round(trig_sek - 0.20, 2) if trig_sek is not None else None
+            hold_qty = held_minis
+        else:
+            inst = ticker
+            anchor = pd_low if (0 <= (spot - pd_low) <= 2.5 * atr14) else min(vwap, low)
+            stop_u = hard_stop if (0 < hard_stop < spot) else round(min(anchor, low) - stop_buf * atr14, 2)
+            target_u = asset_tp if asset_tp > spot else round(spot + 2.5 * atr14, 2)
+            trig_sek = None
+            sell_sek = None
+            hold_qty = 0
+
+        hold_draft = TradeDecisionDraft(
+            ticker=ticker,
+            market_regime=regime,  # type: ignore[arg-type]
+            action="HOLD",
+            instrument=inst,
+            quantity=hold_qty,
+            limit_price=None,
+            avanza_stop_trigger_sek=trig_sek,
+            avanza_stop_sell_sek=sell_sek,
+            underlying_stop_price=stop_u,
+            take_profit_target=target_u,
+            net_risk_reward_ratio=0.0,
+            overnight_gap_warning=False,
+            rationale="No high-conviction entry criteria met; standing aside.",
+        )
+        rr_audit = compute_verified_fee_adjusted_rr(hold_draft, telemetry, asset, risk)
+        hold_note = (
+            "Exchange is currently closed; waiting for live market session."
+            if market_open is False
+            else "Setup criteria not met; waiting for clean trend/volume alignment."
+        )
+        decision = TradeDecision(
+            ticker=ticker,
+            market_regime=regime,  # type: ignore[arg-type]
+            action="HOLD",
+            instrument=inst,
+            quantity=hold_qty,
+            limit_price=None,
+            avanza_stop_trigger_sek=trig_sek,
+            avanza_stop_sell_sek=sell_sek,
+            underlying_stop_price=stop_u,
+            take_profit_target=target_u,
+            net_risk_reward_ratio=float(rr_audit["python_verified_net_rr"]),
+            overnight_gap_warning=False,
+            rationale=hold_note,
+            confidence_score=65 if market_open is False else 60,
+            critic_verdict="APPROVED",
+            critic_notes="",
+            rr_applicable=bool(rr_audit.get("rr_applicable", True)),
+            data_timestamp_cet=data_ts_cet,
+            market_open=market_open,
+        )
+
+    decision.plain_reasons = build_plain_english_reasons(decision, telemetry, asset, metrics, risk)
+    decision.avanza_execution_guide = format_avanza_order_instructions(
+        decision=decision,
+        telemetry=telemetry,
+        asset=asset,
+        metrics=metrics,
+        risk=risk,
+        account_id=account_id,
+    )
+    return decision
+
+
+def _format_verdict_banner(decision: TradeDecision, asset: dict, metrics: dict) -> str:
+    """Formats the bottom-line-first HTML verdict headline."""
+    cur = str(asset.get("currency", "USD"))
+    act = decision.action
+    if act == "HOLD":
+        return "⏸️ <b>WAIT / DO NOT TRADE (HOLD)</b>"
+    if act == "BUY_MINI_LONG":
+        px = float(decision.limit_price or metrics.get("mini_theoretical_sek", 0.0))
+        est_sek = int(round(decision.quantity * px, 0))
+        return f"🟢 <b>BUY MINI LONG — {decision.quantity} units (~{est_sek:,} SEK)</b>"
+    if act == "BUY_MINI_SHORT":
+        px = float(decision.limit_price or metrics.get("mini_short_theoretical_sek", 0.0))
+        est_sek = int(round(decision.quantity * px, 0))
+        return f"🔴 <b>BUY MINI SHORT — {decision.quantity} units (~{est_sek:,} SEK)</b>"
+    if act == "BUY_SHARES":
+        px = float(decision.limit_price or 0.0)
+        est_val = round(decision.quantity * px, 2)
+        disp = f"${est_val:,.2f}" if cur == "USD" else f"{int(round(est_val, 0)):,} SEK"
+        return f"🟢 <b>BUY {decision.quantity} SHARES (~{disp})</b>"
+    if act == "SELL_SHARES":
+        return f"🚨 <b>SELL ALL {decision.quantity} SHARES</b>"
+    if act == "SELL_MINI_LONG":
+        return f"🚨 <b>SELL MINI LONG — {decision.quantity} units</b>"
+    if act == "SELL_MINI_SHORT":
+        return f"🚨 <b>SELL MINI SHORT — {decision.quantity} units</b>"
+    return f"<b>{html.escape(str(act))}</b>"
+
+
+def format_trade_alert_html(
+    decision: TradeDecision,
+    telemetry: dict,
+    portfolio: dict,
+    asset: dict,
+    metrics: dict,
+    risk: dict,
+    source_label: str = "15m Signal",
+    cash_override: Optional[float] = None,
+) -> str:
+    """
+    Formats a plain-English, bottom-line-first Telegram HTML brief with escaped dynamic text,
+    zero raw LaTeX, zero internal jargon tokens, and verdict-gated Avanza next steps.
+    """
+    cur = str(asset.get("currency", "USD"))
+    spot = float(telemetry.get("close", 0.0))
+    spot_disp = _fmt_price(spot, cur)
+    esc_ticker = html.escape(str(decision.ticker))
+    esc_src = _sanitize_plain_text(source_label or "15m Signal")
+
+    chg = telemetry.get("day_change_pct")
+    chg_txt = f" ({float(chg):+.2f}%)" if chg is not None else ""
+
+    market_open = decision.market_open if decision.market_open is not None else telemetry.get("market_open")
+    if market_open is True:
+        mkt_state = "Market Open"
+    elif market_open is False:
+        mkt_state = "Market Closed"
+    else:
+        mkt_state = ""
+
+    ts_raw = decision.data_timestamp_cet or telemetry.get("data_timestamp_cet") or telemetry.get("time") or ""
+    ts_txt = html.escape(str(ts_raw))
+    meta_parts = [p for p in (esc_src, mkt_state, ts_txt) if p]
+    meta_line = " | ".join(meta_parts)
+
+    verdict_banner = _format_verdict_banner(decision, asset, metrics)
+
+    held_shares = int(asset.get("regular_shares_held", 0))
+    held_minis = int(asset.get("mini_units_held", 0))
+    pos_parts: list[str] = []
+    if held_shares > 0:
+        pos_parts.append(f"{held_shares} shares held")
+    if held_minis > 0:
+        pos_parts.append(f"{held_minis} Mini units held")
+    pos_txt = ", ".join(pos_parts) if pos_parts else "No open position"
+
+    cash_sek = float(
+        cash_override
+        if cash_override is not None
+        else portfolio.get("cash_reserves", {}).get("available_tactical_mini_sek", 0.0)
+    )
+    rr_part = ""
+    if decision.rr_applicable and decision.net_risk_reward_ratio > 0 and not decision.action.startswith("SELL"):
+        rr_part = f" | Net R:R: <code>{decision.net_risk_reward_ratio:.2f}:1</code>"
+
+    snapshot_line = (
+        f"<b>{esc_ticker}</b>: <code>{spot_disp}</code>{html.escape(chg_txt)} | "
+        f"{html.escape(pos_txt)} | Cash: <code>{int(round(cash_sek)):,} SEK</code>{rr_part}"
+    )
+
+    lines = [
+        verdict_banner,
+        f"<i>{meta_line}</i>",
+        snapshot_line,
+    ]
+
+    if decision.catalyst_sentiment or decision.catalyst_summary:
+        sent_label = _sanitize_plain_text(decision.catalyst_sentiment.replace("_", " ").title())
+        summ_txt = _sanitize_plain_text(decision.catalyst_summary)
+        cat_body = f"{sent_label}: {summ_txt}" if (sent_label and summ_txt) else (sent_label or summ_txt)
+        if cat_body:
+            lines.append(f"<b>News Context:</b> {cat_body}")
+
+    reasons = decision.plain_reasons or build_plain_english_reasons(decision, telemetry, asset, metrics, risk)
+    bullet_lines = "\n".join(f"• {_sanitize_plain_text(r)}" for r in reasons[:3] if str(r).strip())
+    if bullet_lines:
+        lines.append(f"<b>Why:</b>\n{bullet_lines}")
+
+    # Verdict-gated Next Step: NEVER emit /fill_mini or entry order steps on HOLD
+    if decision.action == "HOLD":
+        if decision.ratchet_triggered and held_minis > 0 and decision.avanza_stop_trigger_sek:
+            trig = float(decision.avanza_stop_trigger_sek)
+            sell = float(decision.avanza_stop_sell_sek or round(trig - 0.20, 2))
+            lines.append(
+                "<b>Next Step (Raise Stop-Loss to Lock Profit):</b>\n"
+                f"• Your open Mini hit +0.85R. Update Stop-Loss on <code>{html.escape(str(decision.instrument))}</code>:\n"
+                f"• <b>Triggerkurs:</b> <code>{trig:.2f} SEK</code> | <b>Säljkurs:</b> <code>{sell:.2f} SEK</code>"
+            )
+        elif held_minis > 0:
+            lines.append("<b>Next Step:</b> Hold your open Mini position and keep your existing Avanza Stop-Loss active.")
+        elif held_shares > 0:
+            hard_stop = float(asset.get("hard_stop_price") or decision.underlying_stop_price or 0.0)
+            if hard_stop > 0:
+                lines.append(
+                    f"<b>Next Step:</b> No action needed. Hold shares and keep protective stop at <code>{_fmt_price(hard_stop, cur)}</code>."
+                )
+            else:
+                lines.append("<b>Next Step:</b> No action needed right now.")
+        else:
+            lines.append("<b>Next Step:</b> No order to place. Wait for the next confirmed setup.")
+    else:
+        guide = decision.avanza_execution_guide or format_avanza_order_instructions(
+            decision=decision,
+            telemetry=telemetry,
+            asset=asset,
+            metrics=metrics,
+            risk=risk,
+            account_id=str(portfolio.get("account_id", "ISK 5872428")),
+        )
+        if guide:
+            lines.append(guide)
+
+    return "\n\n".join(lines)

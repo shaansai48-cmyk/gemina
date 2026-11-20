@@ -1,87 +1,65 @@
 """
 Telegram Command & Free-Form Q&A Router (Application Use-Case Layer).
+All responses use clean Telegram HTML (`parse_mode="HTML"`) with bottom-line-first
+verdicts, strict numeric validation via LedgerService, and live /analyze via YahooFinanceClient.
 """
+import html
 import time
+from pathlib import Path
 from typing import Any, Optional
+
 from gemina.core.diagnostics import SystemDiagnostics
 from gemina.core.tracing import PipelineTracer
+from traderagent.agents.committee import QuantAgentCommittee
 from traderagent.agents.qa_assistant import ConversationalQAAgent
+from traderagent.application.ledger_service import (
+    CommandInputError,
+    LedgerService,
+    _default_watchlist_asset,
+)
 from traderagent.config import TraderConfig
+from traderagent.domain.models import (
+    TICKER_ALIAS_MAP,
+    normalize_ticker,
+    resolve_focus_ticker,
+)
+from traderagent.domain.quant_math import (
+    compute_quant_metrics,
+    format_trade_alert_html,
+)
+from traderagent.infrastructure.market_data import MarketDataError, YahooFinanceClient
 from traderagent.infrastructure.persistence import StateRepository
 from traderagent.infrastructure.system_status import StatusEvaluator
 from traderagent.infrastructure.telegram_adapter import TelegramGateway
 
+__all__ = [
+    "TICKER_ALIAS_MAP",
+    "TelegramCommandRouter",
+    "format_trace_summary_for_telegram",
+    "resolve_focus_ticker",
+]
+
 
 def format_trace_summary_for_telegram(trace: dict[str, Any]) -> str:
     lines = [
-        f"🔍 *Pipeline Trace `{trace['trace_id']}`*",
-        f"• *Flow:* `{trace['flow']}` ({trace['source']})",
-        f"• *Arrival:* `{trace['arrival_ts']}`",
-        f"• *Leaving:* `{trace['leaving_ts']}`",
-        f"• *Total Latency:* `{trace['total_duration_ms']} ms` | *Status:* `{trace['final_status']}`",
-        "*Stages (Arrival -> Multi-Agent Loop -> Leaving):*",
+        f"🔍 <b>Pipeline Trace</b> <code>{html.escape(str(trace['trace_id']))}</code>",
+        f"• <b>Flow:</b> <code>{html.escape(str(trace['flow']))}</code> ({html.escape(str(trace['source']))})",
+        f"• <b>Arrival:</b> <code>{html.escape(str(trace['arrival_ts']))}</code>",
+        f"• <b>Leaving:</b> <code>{html.escape(str(trace['leaving_ts']))}</code>",
+        f"• <b>Total Latency:</b> <code>{trace['total_duration_ms']} ms</code> | <b>Status:</b> <code>{html.escape(str(trace['final_status']))}</code>",
+        "<b>Stages (Arrival -&gt; Multi-Agent Loop -&gt; Leaving):</b>",
     ]
     for s in trace.get("stages", []):
         lines.append(
-            f"`{s['seq']}.` *{s['stage']}* (`{s['duration_ms']}ms`, `{s['status']}`)\n"
-            f"   ↳ _{s['transformation']}_"
+            f"<code>{s['seq']}.</code> <b>{html.escape(str(s['stage']))}</b> "
+            f"(<code>{s['duration_ms']}ms</code>, <code>{html.escape(str(s['status']))}</code>)\n"
+            f"   -&gt; <i>{html.escape(str(s['transformation']))}</i>"
         )
     return "\n".join(lines)
 
 
-TICKER_ALIAS_MAP: dict[str, str] = {
-    "NVIDIA": "NVDA",
-    "TESLA": "TSLA",
-    "MICROSOFT": "MSFT",
-    "APPLE": "AAPL",
-    "GOOGLE": "GOOGL",
-    "ALPHABET": "GOOGL",
-    "AMAZON": "AMZN",
-    "META": "META",
-    "FACEBOOK": "META",
-    "AMD": "AMD",
-    "ERICSSON": "ERIC B",
-    "ERIC": "ERIC B",
-    "ERIC-B": "ERIC B",
-    "ERIC-B.ST": "ERIC B",
-}
-
-
-def resolve_focus_ticker(
-    portfolio: dict[str, Any],
-    explicit_ticker: Optional[str] = None,
-    prefer_held_mini: bool = False,
-    prefer_held_shares: bool = False,
-) -> str:
-    """Resolves a single watchlist ticker safely even when active_focus_ticker is comma-separated."""
-    watchlist = portfolio.get("watchlist", {})
-    if explicit_ticker:
-        norm = explicit_ticker.strip().upper().replace("_", " ")
-        norm = TICKER_ALIAS_MAP.get(norm, norm)
-        if norm in watchlist:
-            return norm
-
-    focus_raw = str(portfolio.get("active_focus_ticker", "NVDA"))
-    focus_list = [TICKER_ALIAS_MAP.get(t.strip().upper(), t.strip().upper()) for t in focus_raw.split(",") if t.strip()]
-    valid_focus = [t for t in focus_list if t in watchlist]
-
-    if prefer_held_mini:
-        for sym in valid_focus + list(watchlist.keys()):
-            if int(watchlist.get(sym, {}).get("mini_units_held", 0)) > 0:
-                return sym
-
-    if prefer_held_shares:
-        for sym in valid_focus + list(watchlist.keys()):
-            if int(watchlist.get(sym, {}).get("regular_shares_held", 0)) > 0:
-                return sym
-
-    if valid_focus:
-        return valid_focus[0]
-    return next(iter(watchlist.keys()), "NVDA")
-
-
 class TelegramCommandRouter:
-    """Dispatches Telegram slash commands and general Gemini 4 Argon questions."""
+    """Dispatches Telegram slash commands, /analyze & /analyse, ledger actions, and free-form Q&A."""
 
     def __init__(
         self,
@@ -90,17 +68,112 @@ class TelegramCommandRouter:
         status_evaluator: StatusEvaluator,
         telegram: TelegramGateway,
         qa_agent: ConversationalQAAgent,
+        committee: Optional[QuantAgentCommittee] = None,
+        market_data: Optional[YahooFinanceClient] = None,
+        ledger: Optional[LedgerService] = None,
     ):
         self.config = config
-        self.repo = repo
+        self._repo = repo
+        self._ledger = ledger or LedgerService(repo)
         self.status_evaluator = status_evaluator
         self.telegram = telegram
         self.qa_agent = qa_agent
+        self.committee = committee
+        self.market_data = market_data or YahooFinanceClient()
+
+    @property
+    def repo(self) -> StateRepository:
+        return self._repo
+
+    @repo.setter
+    def repo(self, value: StateRepository) -> None:
+        self._repo = value
+        if getattr(self, "_ledger", None) is not None:
+            self._ledger.repo = value
+
+    def _get_committee(self) -> QuantAgentCommittee:
+        if self.committee is None:
+            self.committee = QuantAgentCommittee(self.qa_agent.llm)
+        return self.committee
+
+    def _handle_analyze(
+        self,
+        parts: list[str],
+        portfolio: dict[str, Any],
+        tracer: Optional[PipelineTracer] = None,
+    ) -> str:
+        raw_args = parts[1:]
+        lower_set = {a.lower() for a in raw_args}
+        is_deep = "deep" in lower_set
+        ticker_tokens = [a for a in raw_args if a.lower() not in ("deep", "quick", "fast")]
+
+        explicit_raw = " ".join(ticker_tokens).strip() if ticker_tokens else None
+        watchlist = portfolio.get("watchlist", {})
+        if explicit_raw:
+            norm = normalize_ticker(explicit_raw)
+            target_ticker = norm if norm in watchlist else (norm or resolve_focus_ticker(portfolio))
+        else:
+            target_ticker = resolve_focus_ticker(portfolio, prefer_held_mini=True)
+
+        asset = watchlist.get(target_ticker) or _default_watchlist_asset(target_ticker)
+        risk = self.repo.load_risk()
+
+        self.telegram.send_typing()
+        stale_note = ""
+        try:
+            telemetry = self.market_data.fetch_15m_telemetry(target_ticker, asset=asset)
+        except MarketDataError as exc:
+            latest_map = (
+                self.repo.get_latest_audit_by_ticker(max_scan_lines=300)
+                if hasattr(self.repo, "get_latest_audit_by_ticker")
+                else {}
+            )
+            fallback_row = latest_map.get(target_ticker) or {}
+            fallback_tel = fallback_row.get("telemetry")
+            if isinstance(fallback_tel, dict) and "close" in fallback_tel:
+                telemetry = dict(fallback_tel)
+                telemetry.setdefault("ticker", target_ticker)
+                usd_sek, _ = self.market_data.fetch_usd_sek(default=10.16)
+                telemetry.setdefault("usd_sek", usd_sek)
+                stale_note = f"Live market feed unavailable ({exc}); using last webhook bar."
+            else:
+                return (
+                    f"⚠️ Could not fetch live market data for <code>{html.escape(target_ticker)}</code>.\n"
+                    f"• <b>Reason:</b> {html.escape(str(exc))}"
+                )
+
+        usd_sek = float(telemetry.get("usd_sek") or 10.16)
+        metrics = compute_quant_metrics(telemetry, asset, usd_sek=usd_sek)
+        ticker_exp = self.repo.experience.get_ticker_experience(target_ticker)
+
+        decision = self._get_committee().evaluate_live_snapshot(
+            telemetry=telemetry,
+            portfolio=portfolio,
+            asset=asset,
+            risk=risk,
+            metrics=metrics,
+            ticker_experience=ticker_exp,
+            allow_live_search=True,
+            deep=is_deep,
+            tracer=tracer,
+        )
+        msg = format_trade_alert_html(
+            decision=decision,
+            telemetry=telemetry,
+            portfolio=portfolio,
+            asset=asset,
+            metrics=metrics,
+            risk=risk,
+            source_label="/analyze deep" if is_deep else "/analyze",
+        )
+        if stale_note:
+            msg = f"<i>⚠️ {html.escape(stale_note)}</i>\n\n{msg}"
+        return msg
 
     def execute_text_command(self, text: str, tracer: Optional[PipelineTracer] = None) -> tuple[str, Optional[dict[str, Any]]]:
         """
-        Executes a command or free-form question and returns (response_body, optional_status_override).
-        Used both by Telegram polling and by the Gemina SubAgentPlugin interface.
+        Executes a command or free-form question and returns (response_body_html, optional_status_override).
+        Used by Telegram polling, the Web UI API, and SubAgentPlugin.
         """
         text = text.strip()
         if not text.startswith("/"):
@@ -109,7 +182,7 @@ class TelegramCommandRouter:
                     stage="ROUTE_PARSE",
                     status="OK",
                     input_data={"text": text},
-                    transformation="Routed plain-text message to Gemini 4 Argon Q&A engine",
+                    transformation="Routed plain-text message to Q&A assistant",
                     output_data={"route": "general_qa"},
                 )
             self.telegram.send_typing()
@@ -130,26 +203,25 @@ class TelegramCommandRouter:
 
         if cmd in ("/help", "/start"):
             return (
-                "🤖 *Gemina TraderAgent & Multi-Agent Gemini Assistant*\n\n"
-                "*Status, Diagnostics & Pipeline Tracing:*\n"
-                "• `/status` — 1-line status ticker (auto-expands ONLY if status is 🔴 RED).\n"
-                "• `/fullstatus` — Force full expanded portfolio + hardware/command report.\n"
-                "• `/trace [N]` — View arrival-to-leaving multi-agent pipeline trace of last `N` messages.\n"
-                "• `/watchlist` — List all tracked tickers, stops & Mini levels.\n\n"
-                "*Remote Sync & Declarative Agent/Skill Push:*\n"
-                "• `/sync` — Pull latest Git commits (`git pull --ff-only`), run tests & hot-reload agents/skills.\n"
-                "• `/reload` — Hot-reload `agents/*.md` and `skills/*.md` from laptop disk.\n"
-                "• *Upload `.md` file* — Attach `main_agent.md`, `subagent.md`, or any skill `.md` file in chat to update it live on the laptop.\n\n"
-                "*General AI Q&A (Google Search + Live System Commands):*\n"
-                "• Type *any message* (no `/` needed) or `/ask <question>` to ask Gemini 4 Argon anything.\n"
-                "• `/analyze [TICKER]` — Immediate deep quant & live-news brief.\n"
-                "• `/clear` — Clear conversation memory.\n\n"
-                "*Trading & Watchlist Controls:*\n"
-                "• `/focus <TICKER[,TICKER]>` — Switch focus ticker(s) (`TSLA,NVDA`, `ERIC_B`, `AMD`, `META`).\n"
-                "• `/add_ticker <SYM> <USD|SEK> <STOP> <MINI_FIN> [PARITY]`\n"
-                "• `/fill_mini [TICKER] <UNITS> <PRICE_SEK> [LONG|SHORT]` | `/close_mini [TICKER] <EXIT_SEK>`\n"
-                "• `/fill_shares [TICKER] <QTY> <AVG_PRICE>` | `/close_shares [TICKER] <EXIT_PRICE>`\n"
-                "• `/set_stop [TICKER] <STOP> [TARGET]` | `/set_mini [TICKER] <FIN_LVL> [BARRIER] [PARITY]`"
+                "🤖 <b>Gemina TraderAgent &amp; Quant Command Center</b>\n\n"
+                "<b>Analysis &amp; Questions:</b>\n"
+                "• <code>/analyze [TICKER] [deep]</code> (alias <code>/analyse</code>) — Live 15m chart verdict + news + Avanza next step.\n"
+                "• Type <b>any message</b> (no <code>/</code>) or <code>/ask &lt;question&gt;</code> to ask the AI assistant.\n"
+                "• <code>/clear</code> — Clear conversation memory.\n\n"
+                "<b>Status &amp; Diagnostics:</b>\n"
+                "• <code>/status</code> — Compact status line (auto-expands on 🔴 RED).\n"
+                "• <code>/fullstatus</code> — Full portfolio, held positions &amp; GPU/RAM/service health.\n"
+                "• <code>/watchlist</code> — Tracked tickers, hard stops &amp; Mini parameters.\n"
+                "• <code>/trace [N]</code> — View last <code>N</code> pipeline execution traces.\n"
+                "• <code>/experience [TICKER]</code> — 60-day backtest &amp; live stats dossier.\n\n"
+                "<b>Portfolio &amp; Watchlist Controls:</b>\n"
+                "• <code>/focus &lt;TICKER[,TICKER]&gt;</code> — Switch active watchlist focus.\n"
+                "• <code>/add_ticker &lt;SYM&gt; &lt;USD|SEK&gt; &lt;STOP&gt; &lt;MINI_FIN&gt; [PARITY]</code>\n"
+                "• <code>/fill_mini [TICKER] &lt;UNITS&gt; &lt;PRICE_SEK&gt; [LONG|SHORT]</code> | <code>/close_mini [TICKER] &lt;EXIT_SEK&gt;</code>\n"
+                "• <code>/fill_shares [TICKER] &lt;QTY&gt; &lt;AVG_PRICE&gt;</code> | <code>/close_shares [TICKER] &lt;EXIT_PRICE&gt;</code>\n"
+                "• <code>/set_stop [TICKER] &lt;STOP&gt; [TARGET]</code> | <code>/set_mini [TICKER] &lt;FIN_LVL&gt; [BARRIER] [PARITY]</code>\n\n"
+                "<b>Declarative Agent Controls:</b>\n"
+                "• <code>/reload</code> | <code>/sync</code> — Hot-reload <code>agents/*.md</code> &amp; <code>skills/*.md</code>."
             ), None
 
         if cmd == "/reload":
@@ -167,9 +239,9 @@ class TelegramCommandRouter:
                     output_data={"main_skills": main_def.skill_names, "sub_skills": sub_def.skill_names},
                 )
             return (
-                f"🔄 *Declarative Agents & Skills Hot-Reloaded!*\n"
-                f"• *Main Agent:* `{main_def.name}` (`{main_def.model}`, `{len(main_def.compile_system_prompt())} chars`, skills: `{main_def.skill_names}`)\n"
-                f"• *Sub-Agent:* `{sub_def.name}` (`{sub_def.model}`, `{len(sub_def.compile_system_prompt())} chars`, skills: `{sub_def.skill_names}`)"
+                f"🔄 <b>Declarative Agents &amp; Skills Hot-Reloaded</b>\n"
+                f"• <b>Main Agent:</b> <code>{html.escape(main_def.name)}</code> (<code>{html.escape(main_def.model)}</code>, skills: <code>{html.escape(str(main_def.skill_names))}</code>)\n"
+                f"• <b>Sub-Agent:</b> <code>{html.escape(sub_def.name)}</code> (<code>{html.escape(sub_def.model)}</code>, skills: <code>{html.escape(str(sub_def.skill_names))}</code>)"
             ), None
 
         if cmd == "/sync":
@@ -189,10 +261,10 @@ class TelegramCommandRouter:
                     output_data={"head": rev_out},
                 )
             return (
-                f"📦 *Git Sync & Hot-Reload Complete*\n"
-                f"• *Git Pull:* `{pull_out}`\n"
-                f"• *HEAD Commit:* `{rev_out}`\n"
-                f"• *Active Personas:* `{main_def.name}` & `{sub_def.name}` (`{sub_def.model}`)"
+                f"📦 <b>Git Sync &amp; Hot-Reload Complete</b>\n"
+                f"• <b>Git Pull:</b> <code>{html.escape(pull_out)}</code>\n"
+                f"• <b>HEAD Commit:</b> <code>{html.escape(rev_out)}</code>\n"
+                f"• <b>Active Personas:</b> <code>{html.escape(main_def.name)}</code> &amp; <code>{html.escape(sub_def.name)}</code>"
             ), None
 
         if cmd == "/trace":
@@ -212,135 +284,93 @@ class TelegramCommandRouter:
             diag = st["diagnostics"]
             focus_raw = str(portfolio["active_focus_ticker"])
             focus = resolve_focus_ticker(portfolio, prefer_held_mini=True)
-            asset = portfolio["watchlist"][focus]
             stats = portfolio["daily_stats"]
             cmds = SystemDiagnostics.run_all_diagnostic_commands()
+
+            pos_lines: list[str] = []
+            for sym, info in portfolio.get("watchlist", {}).items():
+                sh = int(info.get("regular_shares_held", 0))
+                mn = int(info.get("mini_units_held", 0))
+                if sh > 0 or mn > 0 or sym == focus:
+                    pos_lines.append(
+                        f"• <b>{html.escape(sym)}:</b> Shares <code>{sh}</code> @ <code>{info['blended_avg_price']}</code> "
+                        f"(Stop <code>{info['hard_stop_price']}</code> | TP <code>{info['take_profit_price']}</code>) | "
+                        f"Mini <code>{mn}u</code>"
+                    )
+
             body = (
-                f"📋 *Full System & Portfolio Report* (Focus: `{focus_raw}` | Active Card: `{focus}`)\n"
-                f"• *Shares:* `{asset['regular_shares_held']}` @ `{asset['blended_avg_price']}` (Stop: `{asset['hard_stop_price']}` | TP: `{asset['take_profit_price']}`)\n"
-                f"• *Mini:* `{asset['mini_units_held']}`u `{asset['mini_instrument']}` ({asset.get('mini_side', 'LONG')}, Fin: `{asset['mini_financing_level']}` | Bar: `{asset['mini_barrier']}`)\n"
-                f"• *Tactical Cash:* `{portfolio['cash_reserves']['available_tactical_mini_sek']} SEK`\n"
-                f"• *Today ({stats['date']}):* `{stats['trades_executed_today']}` trades | Realized PnL: `{stats['realized_pnl_today_sek']} SEK`\n"
-                f"• *GPU:* `{diag['gpu_temp_c']}°C` | VRAM `{diag['gpu_vram_mb']} MB` | Util `{diag['gpu_util_pct']}%`\n"
-                f"• *Host:* RAM `{diag['ram_used_pct']}%` | Disk `{diag['disk_used_pct']}%` | Ollama `{diag['ollama_service']}`\n"
-                f"• *Uptime:* `{cmds.get('uptime_load', 'N/A')}`"
+                f"📋 <b>Full System &amp; Portfolio Report</b> (Focus: <code>{html.escape(focus_raw)}</code>)\n"
+                + "\n".join(pos_lines)
+                + "\n"
+                + f"• <b>Tactical Cash:</b> <code>{portfolio['cash_reserves']['available_tactical_mini_sek']} SEK</code>\n"
+                + f"• <b>Today ({html.escape(str(stats['date']))}):</b> <code>{stats['trades_executed_today']}</code> trades | Realized PnL: <code>{stats['realized_pnl_today_sek']} SEK</code>\n"
+                + f"• <b>GPU:</b> <code>{diag['gpu_temp_c']}°C</code> | VRAM <code>{diag['gpu_vram_mb']} MB</code> | Util <code>{diag['gpu_util_pct']}%</code>\n"
+                + f"• <b>Host:</b> RAM <code>{diag['ram_used_pct']}%</code> | Disk <code>{diag['disk_used_pct']}%</code> | Ollama <code>{html.escape(str(diag['ollama_service']))}</code>\n"
+                + f"• <b>Uptime:</b> <code>{html.escape(str(cmds.get('uptime_load', 'N/A')))}</code>"
             )
             return body, st
 
-        if cmd == "/ask" and len(parts) >= 2:
+        if cmd == "/ask":
+            if len(parts) < 2:
+                return "❓ Usage: <code>/ask &lt;your question&gt;</code>", None
             question = text.partition(" ")[2].strip()
             self.telegram.send_typing()
             return self.qa_agent.answer(question, tracer=tracer), None
 
-        if cmd == "/analyze":
-            target_ticker = " ".join(parts[1:]).upper().replace("_", " ") if len(parts) >= 2 else resolve_focus_ticker(portfolio)
-            q = (
-                f"Perform a comprehensive live quantitative and catalyst analysis on {target_ticker}. "
-                f"Check live price action, recent news/catalysts, USD/SEK if applicable, and evaluate how it "
-                f"relates to our portfolio watchlist levels and Avanza Mini Future parameters."
-            )
-            self.telegram.send_typing()
-            return self.qa_agent.answer(q, tracer=tracer, use_subagent_persona=True), None
+        if cmd in ("/analyze", "/analyse"):
+            return self._handle_analyze(parts, portfolio, tracer=tracer), None
 
         if cmd == "/clear":
             self.qa_agent.clear_history()
-            return "🧹 *Cleared conversation history.*", None
+            return "🧹 <b>Cleared conversation history.</b>", None
 
         if cmd == "/watchlist":
             focus_raw = str(portfolio["active_focus_ticker"])
-            focus_set = {x.strip().upper() for x in focus_raw.split(",") if x.strip()}
-            lines = [f"🔭 *Watchlist* (Active Focus: `{focus_raw}`)"]
+            focus_set = {normalize_ticker(x) for x in focus_raw.split(",") if x.strip()}
+            lines = [f"🔭 <b>Watchlist</b> (Active Focus: <code>{html.escape(focus_raw)}</code>)"]
             for sym, info in portfolio["watchlist"].items():
-                marker = "🎯" if sym.upper() in focus_set else "•"
+                marker = "🎯" if normalize_ticker(sym) in focus_set else "•"
                 lines.append(
-                    f"{marker} *{sym}* ({info['currency']}): "
-                    f"Shares `{info['regular_shares_held']}` @ `{info['blended_avg_price']}` | "
-                    f"Stop `{info['hard_stop_price']}` / TP `{info['take_profit_price']}` | "
-                    f"Mini `{info['mini_units_held']}`u (Fin `{info['mini_financing_level']}`, Bar `{info['mini_barrier']}`)"
+                    f"{marker} <b>{html.escape(sym)}</b> ({html.escape(str(info['currency']))}): "
+                    f"Shares <code>{info['regular_shares_held']}</code> @ <code>{info['blended_avg_price']}</code> | "
+                    f"Stop <code>{info['hard_stop_price']}</code> / TP <code>{info['take_profit_price']}</code> | "
+                    f"Mini <code>{info['mini_units_held']}u</code> (Fin <code>{info['mini_financing_level']}</code>, Bar <code>{info['mini_barrier']}</code>)"
                 )
             return "\n".join(lines), None
 
-        if cmd == "/focus" and len(parts) >= 2:
-            old_focus = portfolio["active_focus_ticker"]
-            raw_arg = " ".join(parts[1:]).upper().replace("_", " ")
-            tickers = [TICKER_ALIAS_MAP.get(t.strip(), t.strip()) for t in raw_arg.split(",") if t.strip()]
-            for t_sym in tickers:
-                if t_sym not in portfolio["watchlist"]:
-                    portfolio["watchlist"][t_sym] = {
-                        "exchange": "OMXSTO" if t_sym == "ERIC B" else "NASDAQ",
-                        "currency": "SEK" if t_sym == "ERIC B" else "USD",
-                        "regular_shares_held": 0,
-                        "blended_avg_price": 0.0,
-                        "hard_stop_price": 0.0,
-                        "take_profit_price": 0.0,
-                        "mini_instrument": f"MINI L {t_sym} AVA",
-                        "mini_financing_level": 0.0,
-                        "mini_barrier": 0.0,
-                        "mini_short_instrument": f"MINI S {t_sym} AVA",
-                        "mini_short_financing_level": 0.0,
-                        "mini_short_barrier": 0.0,
-                        "mini_parity": 1.0 if t_sym == "ERIC B" else 10.0,
-                        "mini_units_held": 0,
-                        "mini_avg_sek": 0.0,
-                        "mini_side": "",
-                        "mini_entry_underlying_price": 0.0,
-                        "mini_initial_risk_r": 0.0,
-                    }
-            new_ticker = ",".join(tickers)
-            portfolio["active_focus_ticker"] = new_ticker
-            self.repo.save_portfolio(portfolio)
-            if tracer:
-                tracer.add_stage(
-                    stage="LEDGER_STATE_TRANSFORM",
-                    status="OK",
-                    input_data={"active_focus_ticker": old_focus},
-                    transformation=f"Switched active_focus_ticker {old_focus} -> {new_ticker}",
-                    output_data={"active_focus_ticker": new_ticker},
-                )
-            return f"🎯 *Focus Ticker(s) Switched:* Now tracking `{new_ticker}`.", None
+        if cmd == "/focus":
+            if len(parts) < 2:
+                return "❓ Usage: <code>/focus &lt;TICKER[,TICKER]&gt;</code> (e.g. <code>/focus AAPL,NVDA</code>)", None
+            try:
+                res = self._ledger.switch_focus(" ".join(parts[1:]), tracer=tracer)
+                return f"🎯 <b>Focus Ticker(s) Switched:</b> Now tracking <code>{html.escape(res['active_focus_ticker'])}</code>.", None
+            except CommandInputError as exc:
+                return f"⚠️ {html.escape(str(exc))}", None
 
-        if cmd == "/add_ticker" and len(parts) >= 5:
-            new_ticker = parts[1].upper().replace("_", " ")
-            new_ticker = TICKER_ALIAS_MAP.get(new_ticker, new_ticker)
-            currency = parts[2].upper()
-            hard_stop = float(parts[3].replace(",", "."))
-            fin_level = float(parts[4].replace(",", "."))
-            parity = float(parts[5].replace(",", ".")) if len(parts) >= 6 else (1.0 if currency == "SEK" else 10.0)
-            portfolio["watchlist"][new_ticker] = {
-                "exchange": "OMXSTO" if currency == "SEK" else "NASDAQ",
-                "currency": currency,
-                "regular_shares_held": 0,
-                "blended_avg_price": 0.0,
-                "hard_stop_price": hard_stop,
-                "take_profit_price": 0.0,
-                "mini_instrument": f"MINI L {new_ticker} AVA",
-                "mini_financing_level": fin_level,
-                "mini_barrier": round(fin_level * 1.08, 2),
-                "mini_short_instrument": f"MINI S {new_ticker} AVA",
-                "mini_short_financing_level": round(fin_level * 1.35, 2) if fin_level > 0 else 0.0,
-                "mini_short_barrier": round(fin_level * 1.25, 2) if fin_level > 0 else 0.0,
-                "mini_parity": parity,
-                "mini_units_held": 0,
-                "mini_avg_sek": 0.0,
-                "mini_side": "",
-                "mini_entry_underlying_price": 0.0,
-                "mini_initial_risk_r": 0.0,
-            }
-            self.repo.save_portfolio(portfolio)
-            if tracer:
-                tracer.add_stage(
-                    stage="LEDGER_STATE_TRANSFORM",
-                    status="OK",
-                    input_data={"symbol": new_ticker},
-                    transformation=f"Added {new_ticker} ({currency}) to portfolio watchlist",
-                    output_data=portfolio["watchlist"][new_ticker],
+        if cmd == "/add_ticker":
+            if len(parts) < 5:
+                return "❓ Usage: <code>/add_ticker &lt;SYM&gt; &lt;USD|SEK&gt; &lt;STOP&gt; &lt;MINI_FIN&gt; [PARITY]</code>", None
+            try:
+                res = self._ledger.add_ticker(
+                    ticker=parts[1],
+                    currency=parts[2],
+                    hard_stop=parts[3],
+                    financing_level=parts[4],
+                    parity=parts[5] if len(parts) >= 6 else None,
+                    tracer=tracer,
                 )
-            return f"➕ *Added Ticker `{new_ticker}`* ({currency}, Stop: `{hard_stop}`, Mini Fin: `{fin_level}`).", None
+                asset = res["asset"]
+                return (
+                    f"➕ <b>Added Ticker</b> <code>{html.escape(res['ticker'])}</code> "
+                    f"({html.escape(str(asset['currency']))}, Stop: <code>{asset['hard_stop_price']}</code>, Mini Fin: <code>{asset['mini_financing_level']}</code>)."
+                ), None
+            except CommandInputError as exc:
+                return f"⚠️ {html.escape(str(exc))}", None
 
         def _split_opt_ticker(args: list[str]) -> tuple[Optional[str], list[str]]:
             if not args:
                 return None, args
-            cand = TICKER_ALIAS_MAP.get(args[0].upper().replace("_", " "), args[0].upper().replace("_", " "))
+            cand = normalize_ticker(args[0])
             if cand in portfolio.get("watchlist", {}):
                 return cand, args[1:]
             return None, args
@@ -349,227 +379,139 @@ class TelegramCommandRouter:
             opt_ticker, rem = _split_opt_ticker(parts[1:])
             if len(rem) < 2:
                 return (
-                    "❓ Usage: `/fill_mini [TICKER] <UNITS> <PRICE_SEK> [LONG|SHORT]`\n"
-                    "• _Example:_ `/fill_mini AAPL 65 76.50 LONG`",
+                    "❓ Usage: <code>/fill_mini [TICKER] &lt;UNITS&gt; &lt;PRICE_SEK&gt; [LONG|SHORT]</code>\n"
+                    "• <i>Example:</i> <code>/fill_mini AAPL 65 76.50 LONG</code>",
                     None,
                 )
             if rem[1].upper() in ("LONG", "SHORT"):
                 return (
-                    "⚠️ Missing Mini unit fill price (`<PRICE_SEK>`). Please specify both quantity and SEK fill price.\n"
-                    "• *Usage:* `/fill_mini [TICKER] <UNITS> <PRICE_SEK> [LONG|SHORT]`\n"
-                    "• _Example:_ `/fill_mini AAPL 65 76.50 LONG`",
+                    "⚠️ Missing Mini unit fill price (<code>&lt;PRICE_SEK&gt;</code>). Please specify both quantity and SEK fill price.\n"
+                    "• <b>Usage:</b> <code>/fill_mini [TICKER] &lt;UNITS&gt; &lt;PRICE_SEK&gt; [LONG|SHORT]</code>\n"
+                    "• <i>Example:</i> <code>/fill_mini AAPL 65 76.50 LONG</code>",
                     None,
                 )
+            side_arg = rem[2].upper() if len(rem) >= 3 and rem[2].upper() in ("LONG", "SHORT") else "LONG"
             try:
-                units = int(rem[0])
-                price_sek = float(rem[1].replace(",", "."))
-            except ValueError:
+                res = self._ledger.fill_mini(
+                    ticker=opt_ticker,
+                    units=rem[0],
+                    price_sek=rem[1],
+                    side=side_arg,
+                    tracer=tracer,
+                )
                 return (
-                    "⚠️ Invalid number in `/fill_mini`.\n"
-                    "• *Usage:* `/fill_mini [TICKER] <UNITS> <PRICE_SEK> [LONG|SHORT]`\n"
-                    "• _Example:_ `/fill_mini AAPL 65 76.50 LONG`",
+                    f"✅ Logged <code>{res['units']}</code> units of <code>{html.escape(res['ticker'])}</code> "
+                    f"Mini ({html.escape(res['side'])}) @ <code>{res['price_sek']} SEK</code>. "
+                    f"Cash left: <code>{res['new_cash_sek']} SEK</code>."
+                ), None
+            except CommandInputError as exc:
+                return (
+                    f"⚠️ {html.escape(str(exc))}\n"
+                    f"• <b>Usage:</b> <code>/fill_mini [TICKER] &lt;UNITS&gt; &lt;PRICE_SEK&gt; [LONG|SHORT]</code>\n"
+                    f"• <i>Example:</i> <code>/fill_mini AAPL 65 76.50 LONG</code>",
                     None,
                 )
-            side_tag = rem[2].upper() if len(rem) >= 3 and rem[2].upper() in ("LONG", "SHORT") else "LONG"
-
-            recent_entry_u = 0.0
-            recent_risk_1r = 0.0
-            focus = opt_ticker
-            try:
-                audit_tail = self.repo.get_recent_audit_tail(10)
-            except Exception:
-                audit_tail = []
-
-            if isinstance(audit_tail, list):
-                expected_act = "BUY_MINI_SHORT" if side_tag == "SHORT" else "BUY_MINI_LONG"
-                for entry in reversed(audit_tail):
-                    if not isinstance(entry, dict):
-                        continue
-                    e_sym = str(entry.get("ticker", "")).upper()
-                    e_dec = entry.get("decision") or {}
-                    e_tel = entry.get("telemetry") or {}
-                    if focus is None and e_sym in portfolio.get("watchlist", {}) and e_dec.get("action") == expected_act:
-                        focus = e_sym
-                    if (focus is None or e_sym == focus.upper()) and isinstance(e_tel, dict) and "close" in e_tel:
-                        recent_entry_u = float(e_tel["close"])
-                        stop_u = float(e_dec.get("underlying_stop_price", 0.0) or 0.0) if isinstance(e_dec, dict) else 0.0
-                        if stop_u > 0 and recent_entry_u > 0:
-                            recent_risk_1r = round(abs(recent_entry_u - stop_u), 4)
-                        break
-
-            if focus is None:
-                focus = resolve_focus_ticker(portfolio)
-
-            asset = portfolio["watchlist"][focus]
-            old_cash = portfolio["cash_reserves"]["available_tactical_mini_sek"]
-            asset["mini_units_held"] = units
-            asset["mini_avg_sek"] = price_sek
-            asset["mini_side"] = side_tag
-            if recent_entry_u > 0:
-                asset["mini_entry_underlying_price"] = recent_entry_u
-                asset["mini_initial_risk_r"] = recent_risk_1r
-            portfolio["cash_reserves"]["available_tactical_mini_sek"] = round(old_cash - (units * price_sek), 2)
-            portfolio["daily_stats"]["trades_executed_today"] += 1
-            self.repo.save_portfolio(portfolio)
-            if tracer:
-                tracer.add_stage(
-                    stage="LEDGER_STATE_TRANSFORM",
-                    status="OK",
-                    input_data={"cash_sek": old_cash, "mini_units": 0},
-                    transformation=f"Logged Mini {side_tag} buy: {units}u {focus} @ {price_sek} SEK",
-                    output_data={
-                        "cash_sek": portfolio["cash_reserves"]["available_tactical_mini_sek"],
-                        "mini_units": units,
-                        "mini_side": side_tag,
-                    },
-                )
-            return f"✅ Logged `{units}` units of `{focus}` Mini ({side_tag}) @ `{price_sek} SEK`.", None
 
         if cmd == "/close_mini":
             opt_ticker, rem = _split_opt_ticker(parts[1:])
             if len(rem) != 1:
-                return "❓ Usage: `/close_mini [TICKER] <EXIT_SEK>`", None
-            exit_sek = float(rem[0].replace(",", "."))
-            focus = opt_ticker or resolve_focus_ticker(portfolio, prefer_held_mini=True)
-            asset = portfolio["watchlist"][focus]
-            units, entry_sek = asset["mini_units_held"], asset["mini_avg_sek"]
-            pnl = round((exit_sek - entry_sek) * units, 2)
-            portfolio["cash_reserves"]["available_tactical_mini_sek"] = round(
-                portfolio["cash_reserves"]["available_tactical_mini_sek"] + (units * exit_sek), 2
-            )
-            portfolio["daily_stats"]["realized_pnl_today_sek"] = round(
-                portfolio["daily_stats"]["realized_pnl_today_sek"] + pnl, 2
-            )
-            if pnl < 0:
-                portfolio["daily_stats"]["last_stopout_epoch"] = int(time.time())
-            asset["mini_units_held"] = 0
-            asset["mini_avg_sek"] = 0.0
-            asset["mini_side"] = ""
-            asset["mini_entry_underlying_price"] = 0.0
-            asset["mini_initial_risk_r"] = 0.0
-            self.repo.save_portfolio(portfolio)
-            self.repo.experience.record_closed_trade(focus, "LIVE_AVANZA_MINI", pnl)
-            if tracer:
-                tracer.add_stage(
-                    stage="LEDGER_STATE_TRANSFORM",
-                    status="OK",
-                    input_data={"mini_units": units, "entry_sek": entry_sek},
-                    transformation=f"Closed {focus} Mini @ {exit_sek} SEK (PnL: {pnl} SEK) & updated experience_memory.json",
-                    output_data={"realized_pnl_today_sek": portfolio["daily_stats"]["realized_pnl_today_sek"]},
-                )
-            return f"🔒 Closed `{focus}` Mini @ `{exit_sek} SEK` | Realized PnL: `{pnl} SEK` (Logged to Experience Memory).", None
+                return "❓ Usage: <code>/close_mini [TICKER] &lt;EXIT_SEK&gt;</code>", None
+            try:
+                res = self._ledger.close_mini(ticker=opt_ticker, exit_sek=rem[0], tracer=tracer)
+                return (
+                    f"🔒 Closed <code>{html.escape(res['ticker'])}</code> Mini @ <code>{res['exit_sek']} SEK</code> | "
+                    f"Realized PnL: <code>{res['pnl_sek']} SEK</code> (Logged to Experience Memory)."
+                ), None
+            except CommandInputError as exc:
+                return f"⚠️ {html.escape(str(exc))}", None
 
         if cmd == "/experience":
-            target_sym = (
-                " ".join(parts[1:]).upper().replace("_", " ")
-                if len(parts) >= 2
-                else resolve_focus_ticker(portfolio)
-            )
-            target_sym = TICKER_ALIAS_MAP.get(target_sym, target_sym)
+            raw_sym = " ".join(parts[1:]) if len(parts) >= 2 else resolve_focus_ticker(portfolio)
+            target_sym = normalize_ticker(raw_sym)
             exp = self.repo.experience.get_ticker_experience(target_sym)
-            rules_bullets = "\n".join(f"  • {r}" for r in exp.get("key_learned_rules", []))
+            rules_bullets = "\n".join(f"  • {html.escape(str(r))}" for r in exp.get("key_learned_rules", []))
             return (
-                f"🧠 *Experience Memory Dossier (`{target_sym}`)*\n"
-                f"• *Preferred Strategy:* `{exp.get('preferred_regime_strategy')}`\n"
-                f"• *Verified Win Rate:* `{exp.get('verified_win_rate_pct')}%` | *Profit Factor:* `{exp.get('verified_profit_factor')}`\n"
-                f"• *60-Day Net Backtest PnL:* `{exp.get('net_backtest_pnl_sek'):+} SEK`\n"
-                f"• *Learned Rules:*\n{rules_bullets}"
+                f"🧠 <b>Experience Memory Dossier (<code>{html.escape(target_sym)}</code>)</b>\n"
+                f"• <b>Preferred Strategy:</b> <code>{html.escape(str(exp.get('preferred_regime_strategy')))}</code>\n"
+                f"• <b>Verified Win Rate:</b> <code>{exp.get('verified_win_rate_pct')}%</code> | "
+                f"<b>Profit Factor:</b> <code>{exp.get('verified_profit_factor')}</code>\n"
+                f"• <b>60-Day Net Backtest PnL:</b> <code>{exp.get('net_backtest_pnl_sek'):+} SEK</code>\n"
+                f"• <b>Learned Rules:</b>\n{rules_bullets}"
             ), None
 
         if cmd == "/fill_shares":
             opt_ticker, rem = _split_opt_ticker(parts[1:])
             if len(rem) != 2:
-                return "❓ Usage: `/fill_shares [TICKER] <QTY> <AVG_PRICE>`", None
-            qty, price = int(rem[0]), float(rem[1].replace(",", "."))
-            focus = opt_ticker or resolve_focus_ticker(portfolio)
-            portfolio["watchlist"][focus]["regular_shares_held"] = qty
-            portfolio["watchlist"][focus]["blended_avg_price"] = price
-            self.repo.save_portfolio(portfolio)
-            if tracer:
-                tracer.add_stage(
-                    stage="LEDGER_STATE_TRANSFORM",
-                    status="OK",
-                    input_data={"ticker": focus},
-                    transformation=f"Set regular_shares_held={qty} @ {price}",
-                    output_data={"regular_shares_held": qty, "blended_avg_price": price},
-                )
-            return f"✅ Updated `{focus}` regular shares: `{qty}` @ `{price}`.", None
+                return "❓ Usage: <code>/fill_shares [TICKER] &lt;QTY&gt; &lt;AVG_PRICE&gt;</code>", None
+            try:
+                res = self._ledger.fill_shares(ticker=opt_ticker, quantity=rem[0], avg_price=rem[1], tracer=tracer)
+                return f"✅ Updated <code>{html.escape(res['ticker'])}</code> regular shares: <code>{res['quantity']}</code> @ <code>{res['avg_price']}</code>.", None
+            except CommandInputError as exc:
+                return f"⚠️ {html.escape(str(exc))}", None
 
         if cmd == "/close_shares":
             opt_ticker, rem = _split_opt_ticker(parts[1:])
             if len(rem) != 1:
-                return "❓ Usage: `/close_shares [TICKER] <EXIT_PRICE>`", None
-            exit_price = float(rem[0].replace(",", "."))
-            focus = opt_ticker or resolve_focus_ticker(portfolio, prefer_held_shares=True)
-            asset = portfolio["watchlist"][focus]
-            qty, avg = asset["regular_shares_held"], asset["blended_avg_price"]
-            pnl_native = round((exit_price - avg) * qty, 2)
-            asset["regular_shares_held"] = 0
-            asset["blended_avg_price"] = 0.0
-            self.repo.save_portfolio(portfolio)
-            if tracer:
-                tracer.add_stage(
-                    stage="LEDGER_STATE_TRANSFORM",
-                    status="OK",
-                    input_data={"qty": qty, "avg": avg},
-                    transformation=f"Closed {qty} shares of {focus} @ {exit_price}",
-                    output_data={"gross_pnl": pnl_native},
-                )
-            return f"🔒 Closed `{qty}` `{focus}` shares @ `{exit_price}` (Gross PnL: `{pnl_native} {asset['currency']}`).", None
+                return "❓ Usage: <code>/close_shares [TICKER] &lt;EXIT_PRICE&gt;</code>", None
+            try:
+                res = self._ledger.close_shares(ticker=opt_ticker, exit_price=rem[0], tracer=tracer)
+                return (
+                    f"🔒 Closed <code>{res['quantity']}</code> <code>{html.escape(res['ticker'])}</code> shares @ "
+                    f"<code>{res['exit_price']}</code> (Gross PnL: <code>{res['gross_pnl']} {html.escape(str(res['currency']))}</code>)."
+                ), None
+            except CommandInputError as exc:
+                return f"⚠️ {html.escape(str(exc))}", None
 
         if cmd == "/set_stop":
             opt_ticker, rem = _split_opt_ticker(parts[1:])
             if not rem:
-                return "❓ Usage: `/set_stop [TICKER] <STOP> [TARGET]`", None
-            focus = opt_ticker or resolve_focus_ticker(portfolio)
-            old_stop = portfolio["watchlist"][focus]["hard_stop_price"]
-            stop_val = float(rem[0].replace(",", "."))
-            portfolio["watchlist"][focus]["hard_stop_price"] = stop_val
-            if len(rem) >= 2:
-                portfolio["watchlist"][focus]["take_profit_price"] = float(rem[1].replace(",", "."))
-            self.repo.save_portfolio(portfolio)
-            if tracer:
-                tracer.add_stage(
-                    stage="LEDGER_STATE_TRANSFORM",
-                    status="OK",
-                    input_data={"hard_stop_price": old_stop},
-                    transformation=f"Updated {focus} stop {old_stop} -> {stop_val}",
-                    output_data={"hard_stop_price": stop_val, "take_profit_price": portfolio['watchlist'][focus]['take_profit_price']},
+                return "❓ Usage: <code>/set_stop [TICKER] &lt;STOP&gt; [TARGET]</code>", None
+            try:
+                res = self._ledger.set_stop(
+                    ticker=opt_ticker,
+                    hard_stop_price=rem[0],
+                    take_profit_price=rem[1] if len(rem) >= 2 else None,
+                    tracer=tracer,
                 )
-            return f"🛡️ Updated `{focus}` Stop: `{stop_val}` | Target: `{portfolio['watchlist'][focus]['take_profit_price']}`.", None
+                return f"🛡️ Updated <code>{html.escape(res['ticker'])}</code> Stop: <code>{res['hard_stop_price']}</code> | Target: <code>{res['take_profit_price']}</code>.", None
+            except CommandInputError as exc:
+                return f"⚠️ {html.escape(str(exc))}", None
 
         if cmd == "/set_mini":
             opt_ticker, rem = _split_opt_ticker(parts[1:])
             if not rem:
-                return "❓ Usage: `/set_mini [TICKER] <FIN_LVL> [BARRIER] [PARITY]`", None
-            focus = opt_ticker or resolve_focus_ticker(portfolio)
-            fin_val = float(rem[0].replace(",", "."))
-            portfolio["watchlist"][focus]["mini_financing_level"] = fin_val
-            if len(rem) >= 2:
-                portfolio["watchlist"][focus]["mini_barrier"] = float(rem[1].replace(",", "."))
-            if len(rem) >= 3:
-                portfolio["watchlist"][focus]["mini_parity"] = float(rem[2].replace(",", "."))
-            self.repo.save_portfolio(portfolio)
-            if tracer:
-                tracer.add_stage(
-                    stage="LEDGER_STATE_TRANSFORM",
-                    status="OK",
-                    input_data={"ticker": focus},
-                    transformation=f"Updated Mini params for {focus}",
-                    output_data={"fin": fin_val, "barrier": portfolio["watchlist"][focus]["mini_barrier"]},
+                return "❓ Usage: <code>/set_mini [TICKER] &lt;FIN_LVL&gt; [BARRIER] [PARITY]</code>", None
+            try:
+                res = self._ledger.set_mini_params(
+                    ticker=opt_ticker,
+                    financing_level=rem[0],
+                    barrier=rem[1] if len(rem) >= 2 else None,
+                    parity=rem[2] if len(rem) >= 3 else None,
+                    tracer=tracer,
                 )
-            return (
-                f"⚙️ Updated `{focus}` Mini parameters: Fin `{fin_val}`, "
-                f"Barrier `{portfolio['watchlist'][focus]['mini_barrier']}`, "
-                f"Parity `{portfolio['watchlist'][focus]['mini_parity']}`."
-            ), None
+                return (
+                    f"⚙️ Updated <code>{html.escape(res['ticker'])}</code> Mini parameters: Fin <code>{res['mini_financing_level']}</code>, "
+                    f"Barrier <code>{res['mini_barrier']}</code>, Parity <code>{res['mini_parity']}</code>."
+                ), None
+            except CommandInputError as exc:
+                return f"⚠️ {html.escape(str(exc))}", None
 
-        return "❓ Unknown command. Send `/help` to view all commands, or just type your question without a `/`.", None
+        return "❓ Unknown command. Send <code>/help</code> to view all commands, or type any question directly.", None
+
+    def _persist_update_offset(self, update_id: int) -> None:
+        if hasattr(self.repo, "update_runtime_state"):
+            def _mut(state: dict[str, Any]) -> None:
+                if update_id > int(state.get("last_tg_update_id", 0) or 0):
+                    state["last_tg_update_id"] = int(update_id)
+
+            self.repo.update_runtime_state(_mut)
 
     def poll_and_handle(self, last_update_id: int) -> int:
         updates = self.telegram.fetch_updates(last_update_id)
         for upd in updates:
-            last_update_id = upd["update_id"]
+            last_update_id = int(upd["update_id"])
+            self._persist_update_offset(last_update_id)
+
             msg = upd.get("message", {})
             incoming_chat_id = str(msg.get("chat", {}).get("id", ""))
             if not incoming_chat_id:
@@ -593,8 +535,8 @@ class TelegramCommandRouter:
             if not self.config.telegram_chat_id or not self.config.telegram_chat_id.lstrip("-").isdigit():
                 self.telegram.persist_env_chat_id(incoming_chat_id)
                 self.telegram.send_message(
-                    f"🔗 *Telegram Linked!* Bound your numeric Chat ID (`{incoming_chat_id}`).\n"
-                    f"Send `/help` to see commands or type any question directly.",
+                    f"🔗 <b>Telegram Linked!</b> Bound your numeric Chat ID (<code>{html.escape(incoming_chat_id)}</code>).\n"
+                    f"Send <code>/help</code> to see commands or type any question directly.",
                     tracer=tracer,
                 )
             elif incoming_chat_id != str(self.config.telegram_chat_id):
@@ -612,34 +554,44 @@ class TelegramCommandRouter:
                 tracer.complete("IGNORED_EMPTY")
                 continue
 
-            # Support direct upload of updated declarative .md agent/skill files via Telegram chat
             if "document" in msg:
                 doc = msg["document"]
-                fname = doc.get("file_name", "")
-                if fname.endswith(".md"):
+                raw_fname = str(doc.get("file_name", ""))
+                safe_fname = Path(raw_fname).name
+                if safe_fname == raw_fname and safe_fname.endswith(".md") and not safe_fname.startswith("."):
                     from src.loader import DEFAULT_AGENTS_DIR, DEFAULT_SKILLS_DIR, parse_yaml_frontmatter
                     from src.aistudio_sync import export_aistudio_bundle
                     content = self.telegram.download_file_text(doc["file_id"])
                     meta, body = parse_yaml_frontmatter(content)
-                    target_dir = DEFAULT_AGENTS_DIR if ("agent" in fname or "role" in meta) else DEFAULT_SKILLS_DIR
-                    target_path = target_dir / fname
+                    target_dir = DEFAULT_AGENTS_DIR if ("agent" in safe_fname or "role" in meta) else DEFAULT_SKILLS_DIR
+                    target_path = (target_dir / safe_fname).resolve()
+                    if target_path.parent != target_dir.resolve():
+                        self.telegram.send_message("⚠️ Rejected unsafe file upload path.", tracer=tracer)
+                        tracer.complete("REJECTED_UPLOAD_PATH")
+                        continue
                     target_path.write_text(content, encoding="utf-8")
                     export_aistudio_bundle()
                     tracer.add_stage(
                         stage="DECLARATIVE_FILE_UPLOAD_PUSH",
                         status="OK",
-                        input_data={"file_name": fname, "bytes": len(content)},
+                        input_data={"file_name": safe_fname, "bytes": len(content)},
                         transformation=f"Saved uploaded declarative Markdown to {target_path} & refreshed AI Studio bundle",
                         output_data={"metadata": meta, "body_chars": len(body)},
                     )
                     self.telegram.send_message(
-                        f"📥 *Declarative File Pushed to Laptop!*\n"
-                        f"• *Saved to:* `{target_path}` (`{len(content)} bytes`)\n"
-                        f"• *Frontmatter:* `{meta}`\n"
-                        f"• *Status:* Hot-reloaded and active immediately.",
+                        f"📥 <b>Declarative File Pushed to Laptop</b>\n"
+                        f"• <b>Saved to:</b> <code>{html.escape(str(target_path))}</code> (<code>{len(content)} bytes</code>)\n"
+                        f"• <b>Status:</b> Hot-reloaded and active immediately.",
                         tracer=tracer,
                     )
                     tracer.complete("COMPLETED")
+                    continue
+                if raw_fname and safe_fname != raw_fname:
+                    self.telegram.send_message("⚠️ Rejected unsafe file upload path.", tracer=tracer)
+                    tracer.complete("REJECTED_UPLOAD_PATH")
+                    continue
+                if not text:
+                    tracer.complete("IGNORED_UNSUPPORTED_DOCUMENT")
                     continue
 
             try:
@@ -656,7 +608,8 @@ class TelegramCommandRouter:
                 )
                 tracer.complete("ERROR_HANDLED")
                 self.telegram.send_message(
-                    f"⚠️ Command error (`{type(exc).__name__}`): `{str(exc)[:180]}`\nSend `/help` to view valid syntax.",
+                    f"⚠️ Command error (<code>{html.escape(type(exc).__name__)}</code>): "
+                    f"<code>{html.escape(str(exc)[:180])}</code>\nSend <code>/help</code> to view valid syntax.",
                     tracer=tracer,
                 )
 

@@ -110,6 +110,50 @@
       "default": "",
       "title": "Avanza Execution Guide",
       "type": "string"
+    },
+    "plain_reasons": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Plain Reasons",
+      "type": "array"
+    },
+    "catalyst_sentiment": {
+      "default": "",
+      "title": "Catalyst Sentiment",
+      "type": "string"
+    },
+    "catalyst_summary": {
+      "default": "",
+      "title": "Catalyst Summary",
+      "type": "string"
+    },
+    "rr_applicable": {
+      "default": true,
+      "title": "Rr Applicable",
+      "type": "boolean"
+    },
+    "ratchet_triggered": {
+      "default": false,
+      "title": "Ratchet Triggered",
+      "type": "boolean"
+    },
+    "data_timestamp_cet": {
+      "default": "",
+      "title": "Data Timestamp Cet",
+      "type": "string"
+    },
+    "market_open": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Market Open"
     }
   },
   "required": [

@@ -9,7 +9,11 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 from gemina.core.tracing import PipelineTracer
 from traderagent.domain.models import TradeDecision
-from traderagent.domain.quant_math import compute_quant_metrics, format_avanza_order_instructions
+from traderagent.domain.quant_math import (
+    build_plain_english_reasons,
+    compute_quant_metrics,
+    format_avanza_order_instructions,
+)
 
 CET = ZoneInfo("Europe/Stockholm")
 
@@ -59,6 +63,10 @@ def enforce_hard_quant_guardrails(
         if mutations and decision.action == "HOLD" and before_snapshot["action"] != "HOLD":
             decision.critic_verdict = "VETOED_BY_GUARDRAIL"
 
+        if decision.action.startswith("SELL"):
+            decision.rr_applicable = False
+            decision.net_risk_reward_ratio = 0.0
+
         # Always attach step-by-step Avanza order placement guide when an active order is recommended
         decision.avanza_execution_guide = format_avanza_order_instructions(
             decision=decision,
@@ -68,6 +76,13 @@ def enforce_hard_quant_guardrails(
             risk=risk,
             account_id=portfolio.get("account_id", "ISK 5872428"),
         )
+        decision.plain_reasons = build_plain_english_reasons(
+            decision=decision,
+            telemetry=telemetry,
+            asset=asset,
+            metrics=metrics,
+            risk=risk,
+        )
 
         after_snapshot = {
             "action": decision.action,
@@ -76,6 +91,8 @@ def enforce_hard_quant_guardrails(
             "avanza_stop_trigger_sek": decision.avanza_stop_trigger_sek,
             "avanza_stop_sell_sek": decision.avanza_stop_sell_sek,
             "confidence_score": decision.confidence_score,
+            "ratchet_triggered": decision.ratchet_triggered,
+            "rr_applicable": decision.rr_applicable,
             "has_avanza_guide": bool(decision.avanza_execution_guide),
         }
         if tracer:
@@ -232,6 +249,7 @@ def enforce_hard_quant_guardrails(
                     trig_sek = round(((ratchet_stop - fin_lvl) * fx_mult) / parity, 2)
                     decision.avanza_stop_trigger_sek = trig_sek
                     decision.avanza_stop_sell_sek = round(trig_sek - 0.20, 2)
+                    decision.ratchet_triggered = True
                     mutations.append(f"BREAKEVEN RATCHET +0.15R (Stop -> {ratchet_stop}, Trigger {trig_sek} SEK)")
                     decision.rationale += (
                         f" | [BREAKEVEN RATCHET +{lock_r}R] Reached +{ratchet_r}R; raise Avanza Stop to "
@@ -270,6 +288,7 @@ def enforce_hard_quant_guardrails(
                     trig_sek = round(((s_fin - ratchet_stop) * fx_mult) / parity, 2)
                     decision.avanza_stop_trigger_sek = trig_sek
                     decision.avanza_stop_sell_sek = round(trig_sek - 0.20, 2)
+                    decision.ratchet_triggered = True
                     mutations.append(f"SHORT BREAKEVEN RATCHET +0.15R (Stop -> {ratchet_stop}, Trigger {trig_sek} SEK)")
 
         if decision.action == "BUY_MINI_SHORT":
@@ -298,6 +317,8 @@ def enforce_hard_quant_guardrails(
             decision.action = "SELL_MINI_LONG"
             decision.instrument = asset["mini_instrument"]
             decision.quantity = held_minis
+            decision.rr_applicable = False
+            decision.net_risk_reward_ratio = 0.0
             decision.rationale = (
                 f"[EMA4 FAILURE EXIT] 15m close ({close}) broke below both EMA4 ({ema4}) and VWAP ({vwap}). "
                 f"Exit leveraged Mini Long immediately."
@@ -307,6 +328,8 @@ def enforce_hard_quant_guardrails(
             decision.action = "SELL_MINI_SHORT"
             decision.instrument = asset.get("mini_short_instrument") or asset["mini_instrument"].replace("MINI L", "MINI S")
             decision.quantity = held_minis
+            decision.rr_applicable = False
+            decision.net_risk_reward_ratio = 0.0
             decision.rationale = (
                 f"[EMA4 FAILURE EXIT] 15m close ({close}) broke above both EMA4 ({ema4}) and VWAP ({vwap}). "
                 f"Exit leveraged Mini Short immediately."

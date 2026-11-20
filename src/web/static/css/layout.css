@@ -1,0 +1,228 @@
+/* Base Reset & Responsive 3-Column Dark Quant Terminal Layout */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.42;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+}
+
+/* Tabular Monospace Enforcement for Quantitative Metrics */
+.mono,
+code,
+pre {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+/* Custom Dark Scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: var(--border-strong);
+  border-radius: 999px;
+}
+
+/* App Shell */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* Sticky Top Traffic-Light Header */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  background-color: rgba(11, 15, 23, 0.96);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Mobile Section Navigation (Hidden on Desktop) */
+.mobile-nav {
+  display: none;
+  gap: 6px;
+  padding: 8px 10px;
+  background-color: var(--bg-panel-alt);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.mobile-nav-btn {
+  flex: 1;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mobile-nav-btn.is-active {
+  background: var(--cyan-soft);
+  color: var(--cyan);
+  border-color: var(--cyan-border);
+}
+
+/* 3-Column Command Grid */
+.command-grid {
+  display: grid;
+  grid-template-columns: 325px minmax(0, 1fr) 395px;
+  gap: 10px;
+  padding: 10px;
+  flex: 1;
+  align-items: start;
+}
+
+/* Rails & Center Stage */
+.rail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.rail-left,
+.rail-right {
+  position: sticky;
+  top: 54px;
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.center-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.panel-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Core Panel Surface */
+.panel {
+  background-color: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+  overflow: hidden;
+}
+
+.chart-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.workspace-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 360px;
+}
+
+.chat-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.ledger-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Compact Laptop Breakpoint */
+@media (max-width: 1380px) {
+  .command-grid {
+    grid-template-columns: 290px minmax(0, 1fr) 355px;
+  }
+}
+
+/* Tablet Breakpoint: Center Full-Width Top, Left + Right Rails Paired Below */
+@media (max-width: 1120px) {
+  .command-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .center-stage {
+    grid-column: 1 / -1;
+    order: 1;
+  }
+
+  .rail-left {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    order: 2;
+  }
+
+  .rail-right {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    order: 3;
+  }
+}
+
+/* Mobile Breakpoint: Section Tabs + Crisp Single-Column Stack */
+@media (max-width: 768px) {
+  .mobile-nav {
+    display: flex;
+  }
+
+  .command-grid {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 8px;
+    gap: 8px;
+  }
+
+  .command-grid[data-mobile-view="center"] .rail-left,
+  .command-grid[data-mobile-view="center"] .rail-right {
+    display: none;
+  }
+
+  .command-grid[data-mobile-view="left"] .center-stage,
+  .command-grid[data-mobile-view="left"] .rail-right {
+    display: none;
+  }
+
+  .command-grid[data-mobile-view="right"] .center-stage,
+  .command-grid[data-mobile-view="right"] .rail-left {
+    display: none;
+  }
+}

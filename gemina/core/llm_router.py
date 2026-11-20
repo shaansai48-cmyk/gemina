@@ -3,6 +3,7 @@ Cognitive LLM Router for Gemina Agents:
 Provides unified Cloud (Gemini 4 Argon + Google Search Grounding) -> Local 16GB VRAM GPU (Ollama) failover
 for both free-form grounded text and strict Pydantic structured schemas.
 """
+import threading
 from typing import Optional, Type, TypeVar
 import ollama
 from pydantic import BaseModel
@@ -23,11 +24,14 @@ class CognitiveLLMRouter:
         self.gemini_model = "gemini-4-argon" if gemini_model == "gemini-2.5-pro" else gemini_model
         self.ollama_model = ollama_model
         self._client: Optional[genai.Client] = None
+        self._client_lock = threading.Lock()
 
     @property
     def client(self) -> genai.Client:
         if self._client is None:
-            self._client = genai.Client(api_key=self.api_key)
+            with self._client_lock:
+                if self._client is None:
+                    self._client = genai.Client(api_key=self.api_key)
         return self._client
 
     def generate_grounded_text(

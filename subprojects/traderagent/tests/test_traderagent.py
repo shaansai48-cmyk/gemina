@@ -8,12 +8,16 @@ Verifies:
 """
 import copy
 import json
+import os
+import shutil
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from gemina import AgentRegistry, PipelineTracer
+from gemina.core.diagnostics import SystemDiagnostics
 from traderagent import (
     AdversarialCritique,
     TradeDecision,
@@ -25,11 +29,38 @@ from traderagent import (
     create_trader_agent,
     enforce_hard_quant_guardrails,
 )
+from traderagent.config import SUBPROJECT_ROOT, TraderConfig
+
+DATA_DIR = SUBPROJECT_ROOT / "data"
+
+
+def _build_isolated_config(tmp_dir: Path) -> TraderConfig:
+    shutil.copy2(DATA_DIR / "portfolio.json", tmp_dir / "portfolio.json")
+    shutil.copy2(DATA_DIR / "risk_profile.json", tmp_dir / "risk_profile.json")
+    shutil.copy2(DATA_DIR / "experience_memory.json", tmp_dir / "experience_memory.json")
+    return TraderConfig(
+        gemini_api_key="test-gemini-key",
+        gemini_model="gemini-4-argon",
+        ollama_model="qwen3:14b",
+        telegram_bot_token="123456:TEST_BOT_TOKEN",
+        telegram_chat_id="999888777",
+        apps_script_url="https://example.invalid/webhook",
+        portfolio_path=str(tmp_dir / "portfolio.json"),
+        risk_path=str(tmp_dir / "risk_profile.json"),
+        audit_log_path=str(tmp_dir / "trade_audit.jsonl"),
+        pipeline_trace_path=str(tmp_dir / "pipeline_trace.jsonl"),
+        experience_memory_path=str(tmp_dir / "experience_memory.json"),
+        env_file_path=str(tmp_dir / ".env"),
+        runtime_state_path=str(tmp_dir / "runtime_state.json"),
+    )
 
 
 class TestGeminaTraderAgentArchitecture(unittest.TestCase):
     def setUp(self):
-        self.plugin = create_trader_agent()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp_dir = Path(self._tmp.name)
+        self.cfg = _build_isolated_config(self.tmp_dir)
+        self.plugin = create_trader_agent(self.cfg)
         self.portfolio = self.plugin.daemon.repo.load_portfolio()
         self.risk = self.plugin.daemon.repo.load_risk()
         self.nvda_asset = copy.deepcopy(self.portfolio["watchlist"]["NVDA"])
@@ -39,13 +70,23 @@ class TestGeminaTraderAgentArchitecture(unittest.TestCase):
             "low": 150.10,
             "high": 151.40,
             "ema4": 151.20,
+            "ema50": 151.50,
             "vwap": 152.00,
             "or_high": 154.50,
             "or_low": 150.00,
             "pd_low": 149.80,
+            "pd_high": 155.00,
             "atr14": 2.40,
             "rsi14": 38.5,
+            "rvol": 1.15,
+            "efficiency_ratio": 0.35,
+            "market_open": True,
+            "data_timestamp_cet": "2026-11-20 16:00 CET",
+            "usd_sek": 10.16,
         }
+
+    def tearDown(self):
+        self._tmp.cleanup()
 
     def _make_buy_decision(self) -> TradeDecision:
         return TradeDecision(
@@ -98,7 +139,7 @@ class TestGeminaTraderAgentArchitecture(unittest.TestCase):
         self.assertIn("## Instructions", compiled)
         self.assertIn("[SKILL: gemini-interaction]", compiled)
 
-        bot = DeclarativeTelegramBot()
+        bot = DeclarativeTelegramBot(config=self.cfg)
         self.assertEqual(bot.main_agent_def.name, "gemina_main_agent")
         self.assertEqual(bot.subagent_def.name, "traderagent_subagent")
 
@@ -358,7 +399,7 @@ class TestGeminaTraderAgentArchitecture(unittest.TestCase):
         from traderagent.agents.committee import QuantAgentCommittee
 
         committee = QuantAgentCommittee(fake_llm)
-        tracer = PipelineTracer(flow="pit_test", source="unit_test")
+        tracer = PipelineTracer(flow="pit_test", source="unit_test", trace_file_path=self.cfg.pipeline_trace_path)
         telem = copy.deepcopy(self.sample_telemetry)
         telem["time"] = "2026-10-15T18:00:00Z"
         metrics = compute_quant_metrics(telem, self.nvda_asset)
@@ -482,6 +523,272 @@ class TestGeminaTraderAgentArchitecture(unittest.TestCase):
             router.repo = orig_repo
             router.status_evaluator = orig_stat
             router.telegram = orig_tg
+
+    def test_sre_quant_ux_status_dedup_analyze_and_concurrency(self):
+        from traderagent.application.daemon import TraderAgentDaemon
+        from traderagent.domain.quant_math import format_trade_alert_html
+        from traderagent.infrastructure.apps_script_client import AppsScriptClient
+        from traderagent.infrastructure.persistence import StateRepository
+        from traderagent.infrastructure.system_status import StatusEvaluator
+
+        daemon = self.plugin.daemon
+        repo = daemon.repo
+
+        # 1. StatusEvaluator attributes price to correct ticker & detects held NVDA breach when telemetry=None
+        p = copy.deepcopy(self.portfolio)
+        p["active_focus_ticker"] = "AAPL,NVDA,TSLA"
+        p["watchlist"]["AAPL"]["hard_stop_price"] = 349.49
+        p["watchlist"]["NVDA"]["regular_shares_held"] = 16
+        p["watchlist"]["NVDA"]["hard_stop_price"] = 148.50
+        repo.save_portfolio(p)
+        repo.append_audit_log({
+            "trace_id": "test-nvda-breach",
+            "ts": "2026-11-20T01:00:00Z",
+            "ticker": "NVDA",
+            "telemetry": {"ticker": "NVDA", "close": 146.01, "secret": "LEAK_TEST"},
+            "decision": {"action": "SELL_SHARES"},
+        })
+
+        # Ensure audit log stripped incoming "secret"
+        audit_text = Path(self.cfg.audit_log_path).read_text(encoding="utf-8")
+        self.assertNotIn("LEAK_TEST", audit_text)
+
+        mock_apps = MagicMock()
+        mock_apps.last_ok = True
+        mock_apps.last_error = ""
+        ev = StatusEvaluator(repo, mock_apps)
+
+        with patch.object(
+            SystemDiagnostics,
+            "collect_host_metrics",
+            return_value={
+                "gpu_temp_c": 42, "gpu_vram_mb": "500/16384", "gpu_util_pct": 1,
+                "ram_used_pct": 30, "disk_used_pct": 40, "ollama_service": "active", "red_alerts": [],
+            },
+        ):
+            st_none = ev.evaluate(portfolio=p, risk=self.risk, latest_telemetry=None)
+            self.assertTrue(st_none["is_red"])
+            self.assertIn("<b>NVDA</b> $146.01", st_none["ticker_line"])
+            self.assertNotIn("AAPL", st_none["ticker_line"])
+
+            st_explicit = ev.evaluate(
+                portfolio=p,
+                risk=self.risk,
+                latest_telemetry={"ticker": "NVDA", "close": 146.01},
+                ticker="NVDA",
+            )
+            self.assertTrue(st_explicit["is_red"])
+            self.assertIn("<b>NVDA</b> $146.01", st_explicit["ticker_line"])
+
+        # 2. SystemDiagnostics TTL cache prevents repeated 2.1s nvidia-smi spawns
+        SystemDiagnostics.invalidate_cache()
+        fake_res = MagicMock(stdout="NVIDIA GeForce RTX 3080 Ti, 41, 2, 300, 16384", stderr="")
+        fake_proc = MagicMock(stdout="41, 300, 16384, 2", stderr="")
+        with patch("gemina.core.diagnostics.subprocess.run", return_value=fake_proc) as run_mock:
+            m1 = SystemDiagnostics.collect_host_metrics(max_age_sec=15.0)
+            calls_after_first = run_mock.call_count
+            m2 = SystemDiagnostics.collect_host_metrics(max_age_sec=15.0)
+            self.assertEqual(run_mock.call_count, calls_after_first)
+            self.assertEqual(m1["gpu_temp_c"], m2["gpu_temp_c"])
+
+            with patch("gemina.core.diagnostics.subprocess.run", return_value=fake_res) as cmd_mock:
+                SystemDiagnostics.run_all_diagnostic_commands(max_age_sec=5.0)
+                first_cmd_calls = cmd_mock.call_count
+                SystemDiagnostics.run_all_diagnostic_commands(max_age_sec=5.0)
+                self.assertEqual(cmd_mock.call_count, first_cmd_calls)
+
+        # 3. SELL_SHARES must have rr_applicable=False and R:R=0.0, and exit alerts dedup across bars
+        sell_dec = TradeDecision(
+            ticker="NVDA",
+            market_regime="Downtrend_Continuation",
+            action="SELL_SHARES",
+            instrument="NVDA",
+            quantity=16,
+            limit_price=146.01,
+            avanza_stop_trigger_sek=None,
+            avanza_stop_sell_sek=None,
+            underlying_stop_price=148.50,
+            take_profit_target=160.0,
+            net_risk_reward_ratio=44.62,
+            overnight_gap_warning=False,
+            rationale="Stop breached.",
+        )
+        sell_tel = {**self.sample_telemetry, "ticker": "NVDA", "close": 146.01, "vwap": 150.0, "ema4": 148.0}
+        sell_guard = enforce_hard_quant_guardrails(sell_dec, sell_tel, p, p["watchlist"]["NVDA"], self.risk, 10.16)
+        self.assertFalse(sell_guard.rr_applicable)
+        self.assertEqual(sell_guard.net_risk_reward_ratio, 0.0)
+        self.assertNotIn("Triggerkurs", sell_guard.avanza_execution_guide)
+        self.assertIn("/close_shares NVDA", sell_guard.avanza_execution_guide)
+
+        daemon.apps_script = MagicMock()
+        daemon.apps_script.last_ok = True
+        daemon.apps_script.last_error = ""
+        daemon.committee = MagicMock()
+        daemon.committee.evaluate_bar.return_value = sell_guard
+        daemon.telegram = MagicMock()
+        daemon.command_router.telegram = daemon.telegram
+        daemon.apps_script.poll_bars.side_effect = [
+            [("2026-11-20T01:15:00Z", sell_tel)],
+            [("2026-11-20T01:30:00Z", sell_tel)],
+            [("2026-11-20T01:45:00Z", sell_tel)],
+        ]
+        self.assertEqual(daemon.process_incoming_bars(), 1)
+        self.assertEqual(daemon.telegram.send_message.call_count, 1)
+        self.assertEqual(daemon.process_incoming_bars(), 1)
+        # Second identical exit alert suppressed by alert_dedup
+        self.assertEqual(daemon.telegram.send_message.call_count, 1)
+
+        # Updating stop clears exit dedup so subsequent breach re-alerts
+        daemon.command_router.execute_text_command("/set_stop NVDA 147.00")
+        self.assertEqual(daemon.process_incoming_bars(), 1)
+        self.assertEqual(daemon.telegram.send_message.call_count, 2)
+
+        # 4. last_tg_update_id persisted across daemon restart + path traversal block on document upload
+        daemon.telegram.fetch_updates.return_value = [
+            {"update_id": 552956668, "message": {"chat": {"id": 999888777}, "document": {"file_id": "x", "file_name": "../../etc/passwd.md"}}}
+        ]
+        next_id = daemon.command_router.poll_and_handle(0)
+        self.assertEqual(next_id, 552956668)
+        restarted = TraderAgentDaemon(config=self.cfg)
+        self.assertEqual(restarted.last_tg_update_id, 552956668)
+
+        # 5. /analyze & /analyse produce clean HTML with zero LaTeX and zero HOLD entry guide
+        daemon.market_data = MagicMock()
+        daemon.market_data.fetch_15m_telemetry.return_value = {
+            "ticker": "AAPL", "close": 250.0, "low": 249.5, "high": 251.0,
+            "ema4": 250.2, "ema50": 252.0, "vwap": 251.5, "or_high": 252.0, "or_low": 249.0,
+            "pd_low": 248.0, "pd_high": 254.0, "atr14": 2.0, "rsi14": 45.0,
+            "rvol": 0.85, "efficiency_ratio": 0.18, "usd_sek": 10.16,
+            "market_open": False, "data_timestamp_cet": "2026-11-20 03:00 CET", "day_change_pct": -0.45,
+        }
+        daemon.llm_router.generate_grounded_text = MagicMock(
+            return_value=("SENTIMENT: NEUTRAL\nUSD_SEK: 10.16\nSUMMARY: Quiet overnight session for AAPL.", "gemini-4-argon", "OK")
+        )
+        daemon.command_router.market_data = daemon.market_data
+        msg_en, _ = daemon.command_router.execute_text_command("/analyze AAPL")
+        msg_uk, _ = daemon.command_router.execute_text_command("/analyse AAPL")
+        for html_out in (msg_en, msg_uk):
+            self.assertIn("WAIT / DO NOT TRADE (HOLD)", html_out)
+            self.assertNotIn("$$", html_out)
+            self.assertNotIn("\\frac", html_out)
+            self.assertNotIn("/fill_mini", html_out)
+
+        # 6. Strict CommandInputError guards & multi-thread update_portfolio stress test
+        bad_sek, _ = daemon.command_router.execute_text_command("/fill_mini AAPL 5000sek 20.0")
+        self.assertIn("whole-number", bad_sek)
+        bad_close, _ = daemon.command_router.execute_text_command("/close_mini AAPL 20.0")
+        self.assertIn("No open Mini position", bad_close)
+
+        errors: list[Exception] = []
+
+        def _worker(idx: int) -> None:
+            try:
+                repo.update_portfolio(lambda d: d["watchlist"]["AAPL"].__setitem__("hard_stop_price", 200.0 + idx))
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_worker, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5.0)
+        self.assertEqual(errors, [])
+
+        # 7. AppsScriptClient handles dict-key ticker fallback and strips secret
+        with patch("traderagent.infrastructure.apps_script_client.requests.get") as get_mock:
+            resp_mock = MagicMock()
+            resp_mock.status_code = 200
+            resp_mock.json.return_value = {
+                "bars": {
+                    "AAPL": {
+                        "timestamp": "2026-11-20T02:00:00Z",
+                        "payload": json.dumps({"close": 250.5, "secret": "WEBHOOK_SECRET"}),
+                    }
+                }
+            }
+            get_mock.return_value = resp_mock
+            ac = AppsScriptClient("https://example.invalid/webhook")
+            bars = ac.poll_bars()
+            self.assertEqual(len(bars), 1)
+            self.assertEqual(bars[0][1]["ticker"], "AAPL")
+            self.assertNotIn("secret", bars[0][1])
+
+        # Verify HOLD formatted HTML excludes net_risk_reward_ratio noise
+        hold_html = format_trade_alert_html(
+            TradeDecision(
+                ticker="AAPL", market_regime="Volatile_Chop", action="HOLD", instrument="AAPL",
+                quantity=0, limit_price=None, avanza_stop_trigger_sek=None, avanza_stop_sell_sek=None,
+                underlying_stop_price=245.0, take_profit_target=258.0, net_risk_reward_ratio=2.0,
+                overnight_gap_warning=False, rationale="Stand aside.", rr_applicable=True,
+            ),
+            daemon.market_data.fetch_15m_telemetry.return_value,
+            p,
+            p["watchlist"]["AAPL"],
+            compute_quant_metrics(daemon.market_data.fetch_15m_telemetry.return_value, p["watchlist"]["AAPL"]),
+            self.risk,
+        )
+        self.assertNotIn("/fill_mini", hold_html)
+
+    def test_yahoo_finance_client_pine_v6_and_symbol_mapping(self):
+        from traderagent.infrastructure.market_data import YahooFinanceClient
+
+        self.assertEqual(YahooFinanceClient.to_yahoo_symbol("ERIC B", "OMXSTO"), "ERIC-B.ST")
+        self.assertEqual(YahooFinanceClient.to_yahoo_symbol("NVDA", "NASDAQ"), "NVDA")
+
+        client = YahooFinanceClient(series_ttl_sec=0.0, fx_ttl_sec=0.0)
+        base_ts = 1795185900
+        timestamps = [base_ts + i * 900 for i in range(20)]
+        closes = [150.0 + (i * 0.25) for i in range(20)]
+        fake_chart = {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {
+                            "symbol": "NVDA",
+                            "currency": "USD",
+                            "exchangeTimezoneName": "America/New_York",
+                            "marketState": "REGULAR",
+                            "chartPreviousClose": 149.0,
+                        },
+                        "timestamp": timestamps,
+                        "indicators": {
+                            "quote": [
+                                {
+                                    "open": [c - 0.3 for c in closes],
+                                    "high": [c + 0.5 for c in closes],
+                                    "low": [c - 0.5 for c in closes],
+                                    "close": closes,
+                                    "volume": [100000.0] * 19 + [150000.0],
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        }
+        fake_fx = {
+            "chart": {
+                "result": [
+                    {
+                        "meta": {"symbol": "USDSEK=X", "regularMarketPrice": 10.32},
+                        "timestamp": [base_ts],
+                        "indicators": {"quote": [{"close": [10.32]}]},
+                    }
+                ]
+            }
+        }
+
+        with patch.object(client, "_http_get_json", side_effect=[fake_chart, fake_fx]):
+            telem = client.fetch_15m_telemetry("NVDA", self.nvda_asset)
+
+        self.assertEqual(telem["ticker"], "NVDA")
+        self.assertTrue(telem["market_open"])
+        self.assertEqual(telem["usd_sek"], 10.32)
+        self.assertGreater(telem["ema4"], telem["ema50"])
+        self.assertGreater(telem["vwap"], 149.0)
+        self.assertGreater(telem["atr14"], 0.0)
+        self.assertGreater(telem["rsi14"], 50.0)
+        self.assertGreater(telem["rvol"], 1.0)
 
 
 if __name__ == "__main__":

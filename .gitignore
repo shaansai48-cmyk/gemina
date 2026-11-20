@@ -18,3 +18,6 @@ env/
 *.tmp_*.json
 subprojects/traderagent/data/trade_audit.jsonl
 subprojects/traderagent/data/pipeline_trace.jsonl
+subprojects/traderagent/data/runtime_state.json
+subprojects/traderagent/data/.state.lock
+*.state.lock

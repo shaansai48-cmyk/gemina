@@ -1,10 +1,70 @@
 """
 Domain Entities & Value Objects for Quantitative Trading Decisions.
-Supports bidirectional trading (MINI L Longs, MINI S Shorts, and Regular Shares)
-and step-by-step Avanza order placement instructions.
+Supports bidirectional trading (MINI L Longs, MINI S Shorts, and Regular Shares),
+canonical ticker normalization/focus resolution, and step-by-step Avanza order instructions.
 """
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
+
+TICKER_ALIAS_MAP: dict[str, str] = {
+    "NVIDIA": "NVDA",
+    "TESLA": "TSLA",
+    "MICROSOFT": "MSFT",
+    "APPLE": "AAPL",
+    "GOOGLE": "GOOGL",
+    "ALPHABET": "GOOGL",
+    "AMAZON": "AMZN",
+    "META": "META",
+    "FACEBOOK": "META",
+    "AMD": "AMD",
+    "ERICSSON": "ERIC B",
+    "ERICSSON B": "ERIC B",
+    "ERIC": "ERIC B",
+    "ERIC-B": "ERIC B",
+    "ERIC-B.ST": "ERIC B",
+    "ERIC B.ST": "ERIC B",
+}
+
+
+def normalize_ticker(raw: str) -> str:
+    """Normalizes a raw ticker or company alias (e.g. '$nvda', 'ERIC_B', 'Ericsson') to canonical symbol."""
+    cleaned = " ".join(str(raw or "").strip().lstrip("$").upper().replace("_", " ").split())
+    if not cleaned:
+        return ""
+    return TICKER_ALIAS_MAP.get(cleaned, cleaned)
+
+
+def resolve_focus_ticker(
+    portfolio: dict[str, Any],
+    explicit_ticker: Optional[str] = None,
+    prefer_held_mini: bool = False,
+    prefer_held_shares: bool = False,
+) -> str:
+    """Resolves a single watchlist ticker safely even when active_focus_ticker is comma-separated."""
+    watchlist = portfolio.get("watchlist", {})
+    if explicit_ticker:
+        norm = normalize_ticker(explicit_ticker)
+        if norm in watchlist:
+            return norm
+
+    focus_raw = str(portfolio.get("active_focus_ticker", "NVDA"))
+    focus_list = [normalize_ticker(t) for t in focus_raw.split(",") if t.strip()]
+    valid_focus = [t for t in focus_list if t in watchlist]
+
+    if prefer_held_mini:
+        for sym in valid_focus + list(watchlist.keys()):
+            if int(watchlist.get(sym, {}).get("mini_units_held", 0)) > 0:
+                return sym
+
+    if prefer_held_shares:
+        for sym in valid_focus + list(watchlist.keys()):
+            if int(watchlist.get(sym, {}).get("regular_shares_held", 0)) > 0:
+                return sym
+
+    if valid_focus:
+        return valid_focus[0]
+    return next(iter(watchlist.keys()), "NVDA")
+
 
 MarketRegimeType = Literal[
     "Reversal_Base_Building",
@@ -68,3 +128,10 @@ class TradeDecision(BaseModel):
     critic_verdict: str = "APPROVED"
     critic_notes: str = ""
     avanza_execution_guide: str = ""
+    plain_reasons: list[str] = Field(default_factory=list)
+    catalyst_sentiment: str = ""
+    catalyst_summary: str = ""
+    rr_applicable: bool = True
+    ratchet_triggered: bool = False
+    data_timestamp_cet: str = ""
+    market_open: Optional[bool] = None

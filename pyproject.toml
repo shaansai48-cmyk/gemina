@@ -18,8 +18,12 @@ dependencies = [
 
 [project.scripts]
 gemina-bot = "src.bot:main"
+gemina-ui = "src.web.server:main"
 gemina-aistudio = "src.aistudio_sync:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["gemina*", "src*"]
+
+[tool.setuptools.package-data]
+"src.web" = ["static/*", "static/*/*", "static/*/*/*"]

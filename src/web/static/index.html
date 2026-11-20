@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <title>Gemina Quant Command Center</title>
+  <link rel="stylesheet" href="/static/css/tokens.css" />
+  <link rel="stylesheet" href="/static/css/layout.css" />
+  <link rel="stylesheet" href="/static/css/components.css" />
+</head>
+<body>
+  <div id="app-shell" class="app-shell">
+    <!-- Top Traffic-Light Header + Auto-Expanding Red Alert Drawer -->
+    <header id="topbar-root" class="topbar" role="banner"></header>
+
+    <!-- Mobile Section Quick-Jump Navigation -->
+    <nav id="mobile-nav" class="mobile-nav" aria-label="Dashboard sections">
+      <button type="button" class="mobile-nav-btn is-active" data-section="center">Chart &amp; Live</button>
+      <button type="button" class="mobile-nav-btn" data-section="left">Watchlist</button>
+      <button type="button" class="mobile-nav-btn" data-section="right">AI &amp; Order</button>
+    </nav>
+
+    <!-- 3-Column Dark Quant Command Grid -->
+    <div id="command-grid" class="command-grid">
+      <!-- Left Rail: Account KPIs, Watchlist & 60-Day Benchmarks -->
+      <aside id="left-rail" class="rail rail-left" aria-label="Portfolio Watchlist and Benchmarks">
+        <section id="watchlist-root" class="panel-stack"></section>
+        <section id="benchmarks-root" class="panel-stack"></section>
+      </aside>
+
+      <!-- Center Stage: High-DPI Chart + Tabbed Lower Workspace -->
+      <main id="center-stage" class="center-stage" aria-label="Market Chart and Pipeline Workspace">
+        <section id="chart-root" class="panel chart-panel"></section>
+
+        <section id="workspace-root" class="panel workspace-panel">
+          <div class="workspace-tabs" role="tablist" aria-label="Center workspace panels">
+            <button
+              type="button"
+              id="tab-btn-traces"
+              class="ws-tab-btn is-active"
+              role="tab"
+              aria-selected="true"
+              aria-controls="panel-traces"
+              data-ws-tab="traces"
+            >
+              Live Trace Waterfall
+            </button>
+            <button
+              type="button"
+              id="tab-btn-health"
+              class="ws-tab-btn"
+              role="tab"
+              aria-selected="false"
+              aria-controls="panel-health"
+              data-ws-tab="health"
+            >
+              System Health
+            </button>
+            <button
+              type="button"
+              id="tab-btn-declarative"
+              class="ws-tab-btn"
+              role="tab"
+              aria-selected="false"
+              aria-controls="panel-declarative"
+              data-ws-tab="declarative"
+            >
+              Agents &amp; Skills
+            </button>
+          </div>
+
+          <div id="panel-traces" class="ws-tab-pane is-active" role="tabpanel" aria-labelledby="tab-btn-traces"></div>
+          <div id="panel-health" class="ws-tab-pane" role="tabpanel" aria-labelledby="tab-btn-health" hidden></div>
+          <div id="panel-declarative" class="ws-tab-pane" role="tabpanel" aria-labelledby="tab-btn-declarative" hidden></div>
+        </section>
+      </main>
+
+      <!-- Right Rail: Plain-English Agent Chat + Interactive Avanza Ledger Forms -->
+      <aside id="right-rail" class="rail rail-right" aria-label="AI Quant Advisor and Avanza Order Ledger">
+        <section id="agent-chat-root" class="panel chat-panel"></section>
+        <section id="ledger-panel-root" class="panel ledger-panel"></section>
+      </aside>
+    </div>
+  </div>
+
+  <!-- Toast Notification Stack -->
+  <div id="toast-root" class="toast-stack" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Bearer Token Unlock Overlay (sessionStorage only, shown on HTTP 401 AUTH_REQUIRED) -->
+  <div id="auth-overlay" class="auth-overlay" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title" hidden>
+    <div class="auth-modal">
+      <div class="auth-modal-head">
+        <span class="auth-badge">AUTH_REQUIRED</span>
+        <h2 id="auth-modal-title">Unlock Gemina Command Center</h2>
+        <p class="auth-subtitle">
+          Enter your Bearer UI Token (<code class="mono">GEMINA_UI_TOKEN</code>).
+          Stored strictly in browser <code class="mono">sessionStorage</code> and sent only via Authorization headers.
+        </p>
+      </div>
+      <form id="auth-form" class="auth-form" autocomplete="off">
+        <label class="field-label" for="auth-token-input">Bearer Token</label>
+        <input
+          id="auth-token-input"
+          class="input mono"
+          type="password"
+          placeholder="Paste GEMINA_UI_TOKEN..."
+          required
+        />
+        <p id="auth-error" class="form-error" hidden></p>
+        <div class="auth-actions">
+          <button type="submit" id="auth-submit-btn" class="btn btn-cyan">Unlock Session</button>
+          <button type="button" id="auth-clear-btn" class="btn btn-ghost">Clear Saved Token</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

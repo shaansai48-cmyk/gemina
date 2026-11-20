@@ -7,19 +7,26 @@
   L4: Hard Deterministic Python Circuit Breakers
 """
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Optional
 from gemina.core.llm_router import CognitiveLLMRouter
 from gemina.core.tracing import PipelineTracer
 from traderagent.agents.prompts import (
+    FAST_CATALYST_PROMPT,
     build_l2_strategist_prompt,
     build_l3_critic_prompt,
     get_subagent_definition,
 )
 from traderagent.domain.guardrails import enforce_hard_quant_guardrails
 from traderagent.domain.models import AdversarialCritique, TradeDecision, TradeDecisionDraft
-from traderagent.domain.quant_math import compute_verified_fee_adjusted_rr
+from traderagent.domain.quant_math import (
+    build_deterministic_candidate,
+    build_plain_english_reasons,
+    compute_verified_fee_adjusted_rr,
+    format_avanza_order_instructions,
+)
 
 
 class QuantAgentCommittee:
@@ -138,7 +145,10 @@ class QuantAgentCommittee:
             temperature=sub_def.temperature,
         )
         status = critique.verdict if raw_status == "OK" else f"{critique.verdict}_OLLAMA"
-        critique.refined_decision.net_risk_reward_ratio = math_audit["python_verified_net_rr"]
+        rr_applicable = bool(math_audit.get("rr_applicable", True))
+        critique.refined_decision.net_risk_reward_ratio = (
+            float(math_audit["python_verified_net_rr"]) if rr_applicable else 0.0
+        )
 
         if tracer:
             tracer.add_stage(
@@ -150,6 +160,7 @@ class QuantAgentCommittee:
                     "l2_action": draft.action,
                     "l2_rr": math_audit["llm_claimed_rr"],
                     "python_rr": math_audit["python_verified_net_rr"],
+                    "rr_applicable": rr_applicable,
                 },
                 transformation=(
                     f"Critic verdict={critique.verdict} (confidence={critique.confidence_score}/100): "
@@ -164,6 +175,151 @@ class QuantAgentCommittee:
                 duration_ms=(time.perf_counter() - t0) * 1000.0,
             )
         return critique
+
+    @staticmethod
+    def _parse_fast_catalyst(text: str) -> tuple[str, str]:
+        sentiment = ""
+        summary_lines: list[str] = []
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            m_sent = re.match(r"(?i)^SENTIMENT\s*:\s*([A-Z_]+)", line)
+            if m_sent:
+                cand = m_sent.group(1).upper()
+                if cand in ("BULLISH", "NEUTRAL", "BEARISH_HEADWIND", "BINARY_EVENT_RISK"):
+                    sentiment = cand
+                continue
+            if re.match(r"(?i)^USD_SEK\s*:", line):
+                continue
+            m_sum = re.match(r"(?i)^SUMMARY\s*:\s*(.+)$", line)
+            if m_sum:
+                summary_lines.append(m_sum.group(1).strip())
+            elif sentiment and not line.upper().startswith(("USD_SEK", "SENTIMENT")):
+                summary_lines.append(line)
+        summary = " ".join(summary_lines).strip()
+        if not summary:
+            summary = re.sub(r"\s+", " ", text).strip()[:280]
+        return sentiment or "NEUTRAL", summary
+
+    def evaluate_live_snapshot(
+        self,
+        telemetry: dict,
+        portfolio: dict,
+        asset: dict,
+        risk: dict,
+        metrics: dict,
+        ticker_experience: Optional[dict[str, Any]] = None,
+        allow_live_search: bool = True,
+        deep: bool = False,
+        tracer: Optional[PipelineTracer] = None,
+    ) -> TradeDecision:
+        """
+        Evaluates a live /analyze snapshot. Uses deterministic Python quant structure +
+        hard guardrails paired with 1 fast grounded catalyst check (or delegates to the
+        full 4-level committee loop when `deep=True`).
+        """
+        if deep:
+            return self.evaluate_bar(
+                telemetry=telemetry,
+                portfolio=portfolio,
+                asset=asset,
+                risk=risk,
+                metrics=metrics,
+                recent_ticker_bars=telemetry.get("recent_4_bars", []),
+                ticker_experience=ticker_experience,
+                allow_live_search=allow_live_search,
+                tracer=tracer,
+            )
+
+        t0 = time.perf_counter()
+        ticker = str(telemetry.get("ticker", "NVDA"))
+        candidate = build_deterministic_candidate(
+            telemetry=telemetry,
+            portfolio=portfolio,
+            asset=asset,
+            risk=risk,
+            metrics=metrics,
+        )
+        decision = enforce_hard_quant_guardrails(
+            candidate,
+            telemetry,
+            portfolio,
+            asset,
+            risk,
+            metrics["fx_multiplier"],
+            tracer=tracer,
+        )
+
+        sentiment = ""
+        summary = ""
+        if allow_live_search:
+            try:
+                sub_def = get_subagent_definition()
+                exp_strategy = (ticker_experience or {}).get("preferred_regime_strategy", "")
+                prompt = (
+                    f"{FAST_CATALYST_PROMPT}\n"
+                    f"Ticker: {ticker}\n"
+                    f"Latest Spot: {telemetry.get('close')} ({asset.get('currency', 'USD')}, "
+                    f"Day Change: {telemetry.get('day_change_pct', 'N/A')}%)\n"
+                    f"Market State: {'OPEN' if telemetry.get('market_open') else 'CLOSED'}\n"
+                    f"Technical Verdict Already Computed: {decision.action} ({decision.market_regime})\n"
+                    f"60d Strategy Note: {exp_strategy}"
+                )
+                raw_cat, model_used, _ = self.llm.generate_grounded_text(
+                    prompt=prompt,
+                    system_instruction=sub_def.compile_system_prompt(),
+                    use_google_search=True,
+                    temperature=0.1,
+                    allow_ollama_fallback=False,
+                )
+                sentiment, summary = self._parse_fast_catalyst(raw_cat)
+                if tracer:
+                    tracer.add_stage(
+                        stage="FAST_CATALYST_CHECK",
+                        status="OK",
+                        input_data={"ticker": ticker, "model": model_used},
+                        transformation=f"1-call catalyst check -> {sentiment}",
+                        output_data={"sentiment": sentiment, "summary": summary[:160]},
+                        duration_ms=(time.perf_counter() - t0) * 1000.0,
+                    )
+            except Exception as exc:
+                if tracer:
+                    tracer.add_stage(
+                        stage="FAST_CATALYST_CHECK",
+                        status="DEGRADED_NO_SEARCH",
+                        input_data={"ticker": ticker},
+                        transformation=f"Skipped live news search ({type(exc).__name__}); using deterministic technicals",
+                        output_data={"error": str(exc)[:120]},
+                        duration_ms=(time.perf_counter() - t0) * 1000.0,
+                    )
+
+        if sentiment in ("BEARISH_HEADWIND", "BINARY_EVENT_RISK") and decision.action in ("BUY_MINI_LONG", "BUY_SHARES"):
+            decision.action = "HOLD"
+            decision.quantity = 0
+            decision.limit_price = None
+            decision.avanza_stop_trigger_sek = None
+            decision.avanza_stop_sell_sek = None
+            decision.rr_applicable = False
+            decision.net_risk_reward_ratio = 0.0
+            decision.critic_verdict = "VETOED_BY_CATALYST"
+            decision.rationale = f"Blocked new long entry due to live {sentiment.replace('_', ' ').lower()}: {summary[:140]}"
+            decision.avanza_execution_guide = format_avanza_order_instructions(
+                decision=decision,
+                telemetry=telemetry,
+                asset=asset,
+                metrics=metrics,
+                risk=risk,
+                account_id=str(portfolio.get("account_id", "ISK 5872428")),
+            )
+
+        decision.catalyst_sentiment = sentiment
+        decision.catalyst_summary = summary
+        decision.data_timestamp_cet = str(telemetry.get("data_timestamp_cet", decision.data_timestamp_cet or ""))
+        if decision.market_open is None:
+            decision.market_open = telemetry.get("market_open")
+        decision.plain_reasons = build_plain_english_reasons(decision, telemetry, asset, metrics, risk)
+        return decision
 
     def evaluate_bar(
         self,
@@ -257,6 +413,7 @@ class QuantAgentCommittee:
         )
 
         ref = critique.refined_decision
+        rr_applicable = bool(math_audit.get("rr_applicable", True))
         decision = TradeDecision(
             ticker=ref.ticker,
             market_regime=ref.market_regime,
@@ -268,12 +425,15 @@ class QuantAgentCommittee:
             avanza_stop_sell_sek=ref.avanza_stop_sell_sek,
             underlying_stop_price=ref.underlying_stop_price,
             take_profit_target=ref.take_profit_target,
-            net_risk_reward_ratio=ref.net_risk_reward_ratio,
+            net_risk_reward_ratio=ref.net_risk_reward_ratio if rr_applicable else 0.0,
             overnight_gap_warning=ref.overnight_gap_warning,
             rationale=ref.rationale,
             confidence_score=max(0, min(100, critique.confidence_score)),
             critic_verdict=critique.verdict,
             critic_notes=critique.flaws_found,
+            rr_applicable=rr_applicable,
+            data_timestamp_cet=str(telemetry.get("data_timestamp_cet", "")),
+            market_open=telemetry.get("market_open"),
         )
 
         # Level 4: Hard Deterministic Python Circuit Breakers

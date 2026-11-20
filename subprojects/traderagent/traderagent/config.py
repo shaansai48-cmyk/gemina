@@ -26,6 +26,10 @@ class TraderConfig:
     pipeline_trace_path: str
     experience_memory_path: str
     env_file_path: str
+    runtime_state_path: str = ""
+    ui_host: str = "127.0.0.1"
+    ui_port: int = 8765
+    ui_token: str = ""
 
     @classmethod
     def from_env(cls, env_path: str | Path | None = None, data_dir: str | Path | None = None) -> "TraderConfig":
@@ -41,6 +45,9 @@ class TraderConfig:
         raw_model = os.environ.get("GEMINI_MODEL", "gemini-4-argon")
         gemini_model = "gemini-4-argon" if raw_model == "gemini-2.5-pro" else raw_model
 
+        raw_port = os.environ.get("GEMINA_UI_PORT", "8765").strip()
+        ui_port = int(raw_port) if raw_port.isdigit() else 8765
+
         return cls(
             apps_script_url=os.environ.get("APPS_SCRIPT_URL", ""),
             gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
@@ -54,4 +61,8 @@ class TraderConfig:
             pipeline_trace_path=str(resolved_data / "pipeline_trace.jsonl"),
             experience_memory_path=str(resolved_data / "experience_memory.json"),
             env_file_path=str(resolved_env),
+            runtime_state_path=str(resolved_data / "runtime_state.json"),
+            ui_host=os.environ.get("GEMINA_UI_HOST", "127.0.0.1").strip() or "127.0.0.1",
+            ui_port=ui_port,
+            ui_token=os.environ.get("GEMINA_UI_TOKEN", "").strip(),
         )
